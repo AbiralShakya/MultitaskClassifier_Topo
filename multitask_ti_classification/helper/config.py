@@ -75,18 +75,12 @@ TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
 TEST_RATIO = 0.1 
 
-# --- Feature Dimensions (will be dynamically determined by dataset.py) ---
-# These are placeholders; dataset.py will try to infer them or raise an error if not found.
-# If you get dimension mismatch errors, inspect your data and update these or ensure
-# your data generation creates consistent sizes.
-ASPH_FEATURE_DIM = 63  # Based on your mp-1 example output for asph_features
-BAND_REP_FEATURE_DIM = 4756 # Based on your mp-1 example output for band_rep_features
-CRYSTAL_NODE_FEATURE_DIM = 3 # Based on _get_elemental_features output (atomic number, period, group)
-KSPACE_GRAPH_NODE_FEATURE_DIM = 100 # Placeholder: This is highly dependent on vocab size in KSpacePhysicsGraphBuilder
-                                    # It's 3 (k-coords) + irrep_vocab_size + branch_irrep_vocab_size + decomp_vocab_size
-                                    # Inspect an actual kspace_graph.x.shape[1] from your data if errors occur.
-SCALAR_TOTAL_DIM = None # This will be dynamically set by train.py after scaler fitting.
-
+ASPH_FEATURE_DIM = 63  
+BAND_REP_FEATURE_DIM = 4756
+CRYSTAL_NODE_FEATURE_DIM = 3
+KSPACE_GRAPH_NODE_FEATURE_DIM = 100 # It's 3 (k-coords) + irrep_vocab_size + branch_irrep_vocab_size + decomp_vocab_size
+                  
+SCALAR_TOTAL_DIM = None
 
 MODEL_SAVE_DIR = PROJECT_ROOT / "saved_models"
 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
