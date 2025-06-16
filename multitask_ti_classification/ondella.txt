@@ -21,3 +21,9 @@ cd /scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classifi
 cat submit_training.sh (after cd into training in folder, in scratch)
 
 sbatch submit_training.sh
+
+
+2.7.1+cu126
+12.6
+
+pip install torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.7.0+cu126.html

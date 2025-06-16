@@ -14,7 +14,7 @@ import warnings
 
 # Import from local modules
 import helper.config as config
-from utils import SpaceGroupManager, load_material_graph_from_dict, load_pickle_data
+from helper.topo_utils import SpaceGroupManager, load_material_graph_from_dict, load_pickle_data
 
 # Suppress specific warnings from pandas when mapping values that might not exist
 warnings.filterwarnings("ignore", ".*is not in the top-level domain.*", UserWarning)
@@ -39,16 +39,32 @@ class MaterialDataset(Dataset):
         if not self.master_index_path.exists():
             raise FileNotFoundError(f"Master index file not found at: {self.master_index_path}")
         
+        # Assume master_index_path is a CSV as per your previous error output which used pd.read_csv
+        # If it's parquet, you'd use pd.read_parquet
         self.metadata_df = pd.read_csv(self.master_index_path)
         
+        # --- DEBUG PRINTS (KEEP THESE IN FOR NOW TO VERIFY) ---
+        print("\n--- Debugging metadata_df in MaterialDataset init ---")
+        print(f"Path to metadata file: {self.master_index_path}")
+        print("Columns found in metadata_df:")
+        print(self.metadata_df.columns.tolist()) # Convert to list for cleaner print
+        print("First few rows of metadata_df:")
+        print(self.metadata_df.head())
+        print("----------------------------------------------------\n")
+        # --- END DEBUG PRINTS ---
+
         # Filter out materials that don't have valid labels in our defined mappings
         initial_count = len(self.metadata_df)
+        
+        # --- CHANGE HERE: Using 'Property' column for filtering topological and magnetic types ---
         self.metadata_df = self.metadata_df[
-            self.metadata_df['topological_class'].isin(config.TOPOLOGY_CLASS_MAPPING.keys()) &
-            self.metadata_df['magnetic_type'].isin(config.MAGNETISM_CLASS_MAPPING.keys())
+            self.metadata_df['Property'].isin(config.TOPOLOGY_CLASS_MAPPING.keys()) &
+            self.metadata_df['Property'].isin(config.MAGNETISM_CLASS_MAPPING.keys())
         ].reset_index(drop=True)
+        # --- END CHANGE ---
+
         if len(self.metadata_df) < initial_count:
-            print(f"Filtered out {initial_count - len(self.metadata_df)} materials due to undefined topological or magnetic types.")
+            print(f"Filtered out {initial_count - len(self.metadata_df)} materials due to undefined topological or magnetic types based on the 'Property' column.")
 
         self.space_group_manager = SpaceGroupManager(self.kspace_graphs_base_dir)
         self.scaler = scaler
@@ -61,6 +77,7 @@ class MaterialDataset(Dataset):
         self.scalar_features_columns = [
             'band_gap', 'formation_energy', 'density', 'volume', 'nsites',
             'space_group_number', 'total_magnetization', 'energy_above_hull'
+            # Ensure these columns exist or are handled by your data loading
         ]
         
         # Initialize feature dimensions (will be updated dynamically by train.py after first item load)
@@ -99,11 +116,8 @@ class MaterialDataset(Dataset):
             kspace_graph, kspace_physics_features = kspace_data_tuple
         else:
             # Fallback for missing k-space data. Use dummy tensors to maintain batch consistency.
-            # Dimensions should match what the model expects even for dummy data.
             print(f"Warning: Missing shared k-space graph/features for SG {sg_number} (JID: {row['jid']}). Using dummy data.")
-            # Ensure dummy dimensions align with expected model input if possible.
-            # These specific dimensions might need to be adjusted based on actual model input expectations.
-            dummy_node_dim = self._kspace_graph_node_feature_dim if self._kspace_graph_node_feature_dim else config.KSPACE_GRAPH_NODE_FEATURE_DIM # Fallback to config if not yet inferred
+            dummy_node_dim = self._kspace_graph_node_feature_dim if self._kspace_graph_node_feature_dim else config.KSPACE_GRAPH_NODE_FEATURE_DIM
             dummy_global_dim = config.BAND_REP_FEATURE_DIM + 3 + 1 # (band_rep_vector + electric_field + space_group_number)
             
             kspace_graph = PyGData(x=torch.zeros(1, dummy_node_dim),
@@ -117,23 +131,16 @@ class MaterialDataset(Dataset):
 
 
         # --- 4. Extract Scalar Features (Band Reps + Metadata) ---
-        # Note: 'vectorized_features_dir' is a directory, not a direct file.
-        # Your previous code extracts 'band_rep_features.npy' from there.
         band_rep_features_path = self.data_root_dir / row['file_locations.vectorized_features_dir'] / 'band_rep_features.npy'
         band_rep_features = torch.tensor(np.load(band_rep_features_path), dtype=torch.float)
         
-        # Extract direct scalar metadata features from the row
         scalar_metadata_features = [row[col] for col in self.scalar_features_columns]
-        # Handle potential NaN values: replace with 0 or a sensible default
         scalar_metadata_features = [0.0 if pd.isna(val) else val for val in scalar_metadata_features]
         scalar_metadata_features = torch.tensor(scalar_metadata_features, dtype=torch.float)
 
-        # Concatenate band_rep_features with other scalar metadata features
         combined_scalar_features = torch.cat([band_rep_features, scalar_metadata_features])
         
-        # Apply scaling if scaler is provided
         if self.scaler:
-            # StandardScaler expects a 2D array (n_samples, n_features)
             combined_scalar_features = torch.tensor(self.scaler.transform(combined_scalar_features.unsqueeze(0)).squeeze(0), dtype=torch.float)
         
         # Dynamically set feature dimensions after the first item is loaded
@@ -154,21 +161,23 @@ class MaterialDataset(Dataset):
             config.DECOMPOSITION_FEATURE_DIM = self._decomposition_feature_dim
 
         # --- 5. Prepare Labels ---
-        topology_label_str = row['topological_class']
+        # --- CHANGE HERE: Using 'Property' column for both labels ---
+        topology_label_str = row['Property'] # Assuming 'Property' holds the string for topological class
         topology_label = torch.tensor(self.topology_class_map.get(topology_label_str, self.topology_class_map["Unknown"]), dtype=torch.long)
         
-        magnetism_label_str = row['magnetic_type']
+        magnetism_label_str = row['Property'] # Assuming 'Property' also holds the string for magnetic type
         magnetism_label = torch.tensor(self.magnetism_class_map.get(magnetism_label_str, self.magnetism_class_map["UNKNOWN"]), dtype=torch.long)
+        # --- END CHANGE ---
 
         return {
             'crystal_graph': crystal_graph,
-            'kspace_graph': kspace_graph, # This is the PyGData for k-space connectivity
+            'kspace_graph': kspace_graph,
             'asph_features': asph_features,
-            'scalar_features': combined_scalar_features, # This includes band_rep and metadata
-            'kspace_physics_features': kspace_physics_features, # This is the dict of tensors (ebr, topo_indices, decomp_features)
+            'scalar_features': combined_scalar_features,
+            'kspace_physics_features': kspace_physics_features,
             'topology_label': topology_label,
             'magnetism_label': magnetism_label,
-            'jid': row['jid'] # Include JID for debugging/tracking
+            'jid': row['jid']
         }
 
 # Custom collate function for PyGDataLoader to handle dictionary of Data objects and other tensors
@@ -180,15 +189,12 @@ def custom_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not batch:
         return {}
 
-    # Separate PyGData objects for batching with PyG's default_collate
-    # PyGDataLoader.dataset is a hacky way to access the default_collate function.
-    # More robust way would be to import default_collate directly from torch_geometric.data.dataloader
-    # For now, this works as PyGDataLoader internally uses it for its dataset if given a list of Data objects.
-    
     # Batch crystal graphs
+    # Note: Accessing .dataset from a DataLoader is a common but slightly indirect way
+    # to get a batched PyGData object if you don't explicitly import batch.
     crystal_graphs_batch = PyGDataLoader(
         [d['crystal_graph'] for d in batch],
-        batch_size=len(batch) # Process all items in this batch
+        batch_size=len(batch) 
     ).dataset 
     # Batch kspace graphs
     kspace_graphs_batch = PyGDataLoader(
@@ -207,13 +213,11 @@ def custom_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
     # Handle kspace_physics_features which is a dict of tensors
-    # Collect all sub-features into lists and then stack them
     kspace_physics_features_collated = defaultdict(list)
     for d in batch:
         for key, tensor in d['kspace_physics_features'].items():
             kspace_physics_features_collated[key].append(tensor)
     
-    # Now stack the collected lists of tensors
     for key in kspace_physics_features_collated:
         kspace_physics_features_collated[key] = torch.stack(kspace_physics_features_collated[key])
     collated_batch['kspace_physics_features'] = kspace_physics_features_collated

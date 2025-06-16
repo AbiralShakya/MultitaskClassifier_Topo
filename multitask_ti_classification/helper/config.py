@@ -26,7 +26,7 @@ TOPOLOGY_CLASS_MAPPING = {
     "Trivial": 2,           # Trivial metal/insulator (materials not classified as TI or TSM)
     "Unknown": 2,           # Treat unknown topological types as trivial for classification purposes, or filter
 }
-NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values())) # Should be 3 (TI, TSM, Trivial)
+NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values())) # Should be 3 (TI, SM, Trivial)
 
 NUM_WORKERS = 8
 

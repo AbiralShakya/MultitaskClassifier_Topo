@@ -115,7 +115,7 @@ def train_main_classifier():
     # --- 4. Loss Functions and Optimizer ---
     # For Magnetism: It's currently multi-class (4 classes: NM, FM, AFM, FiM)
     criterion_magnetism = nn.CrossEntropyLoss()
-    # For Topology: Multi-class (3 classes: TI, TSM, Trivial)
+    # For Topology: Multi-class (3 classes: TI, SM, Trivial)
     criterion_topology = nn.CrossEntropyLoss()
 
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
