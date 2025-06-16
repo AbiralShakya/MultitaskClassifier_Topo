@@ -15,3 +15,8 @@ pip install torch_scatter torch_sparse torch_cluster torch_spline_conv -f https:
 
 pip install e3nn
 pip install pandas numpy scikit-learn
+
+
+cat sbatch_submit_training.sh (after cd into training in folder, in scratch)
+
+and then sbatch submit_training.sh
