@@ -16,7 +16,8 @@ pip install torch_scatter torch_sparse torch_cluster torch_spline_conv -f https:
 pip install e3nn
 pip install pandas numpy scikit-learn
 
+cd /scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification
 
-cat sbatch_submit_training.sh (after cd into training in folder, in scratch)
+cat submit_training.sh (after cd into training in folder, in scratch)
 
 sbatch submit_training.sh

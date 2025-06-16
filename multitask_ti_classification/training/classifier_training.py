@@ -10,9 +10,9 @@ from pathlib import Path
 from sklearn.preprocessing import StandardScaler
 import warnings
 
-import helper.config as config
-from dataset import MaterialDataset, custom_collate_fn
-from model import MultiModalMaterialClassifier # Import your main model
+from helper import config
+from helper.dataset import MaterialDataset, custom_collate_fn
+from src.model import MultiModalMaterialClassifier 
 
 def compute_metrics(predictions, targets, num_classes, task_name):
     """Computes accuracy and detailed classification report."""

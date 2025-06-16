@@ -16,13 +16,16 @@ module purge
 module load anaconda3/2024.10 
 
 
-# module load cudatoolkit/11.8
+module load cudatoolkit/12.6
 # module load cudnn/8.9.2.26_cuda11.8
 
 source ~/.bashrc
 conda activate topological_ml 
 
-cd /scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification
+PROJECT_ROOT_DIR="/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification"
+
+export PYTHONPATH="${PYTHONPATH}:${PROJECT_ROOT_DIR}"
+cd "${PROJECT_ROOT_DIR}"
 
 echo "Starting Python training script at $(date)"
 python src/main.py

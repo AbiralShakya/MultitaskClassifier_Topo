@@ -1,5 +1,6 @@
 from training import classifier_training as trainer
-import helper.config as config
+from helper import config
+from src import model
 import os
 from pathlib import Path
 
