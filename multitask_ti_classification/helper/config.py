@@ -1,20 +1,17 @@
-# config.py
-
 import os
 from pathlib import Path
 import torch
 
 # --- Paths Configuration ---
 # Set PROJECT_ROOT to the directory where this config.py resides.
-# Adjust DATA_DIR and KSPACE_GRAPHS_DIR to point to your generated data.
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Base directory for your multimodal material database (output of IntegratedMaterialProcessor)
-DATA_DIR = PROJECT_ROOT / "multimodal_materials_db_mp"
+DATA_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_db_mp"
 # Base directory for pre-generated k-space graphs (output of KSpacePhysicsGraphBuilder)
-KSPACE_GRAPHS_DIR = PROJECT_ROOT / "kspace_topology_graphs"
+KSPACE_GRAPHS_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs"
 # Path to the master index file
-MASTER_INDEX_PATH = DATA_DIR / "master_index.parquet"
+MASTER_INDEX_PATH = DATA_DIR / "/scratch/gpfs/as0714/graph_vector_topological_insulator/materials_database.csv"
 
 # --- Classification Labels Mapping ---
 # These mappings must be consistent with how labels are generated in your data pipeline
@@ -30,6 +27,8 @@ TOPOLOGY_CLASS_MAPPING = {
     "Unknown": 2,           # Treat unknown topological types as trivial for classification purposes, or filter
 }
 NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values())) # Should be 3 (TI, TSM, Trivial)
+
+NUM_WORKERS = 8
 
 # Magnetism Classification
 # Ensure these match the 'magnetic_type' values from Materials Project (e.g., 'NM', 'FM', 'AFM', 'FiM')

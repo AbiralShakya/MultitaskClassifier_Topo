@@ -1,0 +1,17 @@
+cd /scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification
+
+module purge
+module load anaconda3/2024.10 (module avil anaconda3)
+
+conda init bash
+conda create -n topological_ml python=3.9
+
+conda activate topological_ml
+
+conda install pytorch pytorch-cuda=11.8 -c pytorch -c nvidia
+
+pip install torch_geometric
+pip install torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.2.0+cu118.html
+
+pip install e3nn
+pip install pandas numpy scikit-learn

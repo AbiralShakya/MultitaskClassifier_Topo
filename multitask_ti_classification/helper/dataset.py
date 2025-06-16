@@ -39,7 +39,7 @@ class MaterialDataset(Dataset):
         if not self.master_index_path.exists():
             raise FileNotFoundError(f"Master index file not found at: {self.master_index_path}")
         
-        self.metadata_df = pd.read_parquet(self.master_index_path)
+        self.metadata_df = pd.read_csv(self.master_index_path)
         
         # Filter out materials that don't have valid labels in our defined mappings
         initial_count = len(self.metadata_df)
