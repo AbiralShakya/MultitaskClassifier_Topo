@@ -91,6 +91,7 @@ def train_main_classifier():
         kspace_node_feature_dim=config.KSPACE_GRAPH_NODE_FEATURE_DIM,
         asph_feature_dim=config.ASPH_FEATURE_DIM,
         scalar_feature_dim=config.SCALAR_TOTAL_DIM,
+        decomposition_feature_dim=config.DECOMPOSITION_FEATURE_DIM,
         num_topology_classes=config.NUM_TOPOLOGY_CLASSES,
         num_magnetism_classes=config.NUM_MAGNETISM_CLASSES,
         
@@ -129,17 +130,12 @@ def train_main_classifier():
         total_train_loss = 0
         
         for batch_idx, batch in enumerate(train_loader):
-            # Move all batch components to the device
-            # PyG Data objects need to be moved to device with .to() method
-            # For dicts of tensors, iterate
             for key in ['crystal_graph', 'kspace_graph']:
                 batch[key] = batch[key].to(config.DEVICE)
             for key in ['asph_features', 'scalar_features', 'topology_label', 'magnetism_label']:
                 batch[key] = batch[key].to(config.DEVICE)
-            
-            # If kspace_physics_features is used directly in model (it isn't in current model.py)
-            # for sub_key in batch['kspace_physics_features']:
-            #     batch['kspace_physics_features'][sub_key] = batch['kspace_physics_features'][sub_key].to(config.DEVICE)
+            for sub_key in batch['kspace_physics_features']: 
+                 batch['kspace_physics_features'][sub_key] = batch['kspace_physics_features'][sub_key].to(config.DEVICE) 
 
             optimizer.zero_grad()
             

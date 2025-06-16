@@ -88,6 +88,7 @@ CRYSTAL_NODE_FEATURE_DIM = 3
 KSPACE_GRAPH_NODE_FEATURE_DIM = 100 # It's 3 (k-coords) + irrep_vocab_size + branch_irrep_vocab_size + decomp_vocab_size
                   
 SCALAR_TOTAL_DIM = None
+DECOMPOSITION_FEATURE_DIM = None 
 
 MODEL_SAVE_DIR = PROJECT_ROOT / "saved_models"
 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)

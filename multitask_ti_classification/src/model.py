@@ -243,6 +243,7 @@ class MultiModalMaterialClassifier(nn.Module):
         kspace_node_feature_dim: int,
         asph_feature_dim: int,
         scalar_feature_dim: int,
+        decomposition_feature_dim: int,
         num_topology_classes: int,
         num_magnetism_classes: int,
         
@@ -265,7 +266,6 @@ class MultiModalMaterialClassifier(nn.Module):
     ):
         super().__init__()
 
-        # Encoders for each modality
         self.crystal_encoder = RealSpaceEGNNEncoder(
             node_input_scalar_dim=crystal_node_feature_dim,
             hidden_irreps_str=egnn_hidden_irreps_str,
@@ -277,18 +277,22 @@ class MultiModalMaterialClassifier(nn.Module):
         self.kspace_encoder = KSpaceTransformerGNNEncoder(
             node_feature_dim=kspace_node_feature_dim,
             hidden_dim=kspace_gnn_hidden_channels,
-            out_channels=latent_dim_gnn, # Output dimension for k-space GNN
+            out_channels=latent_dim_gnn,
             n_layers=kspace_gnn_num_layers,
             num_heads=kspace_gnn_num_heads
         )
         self.asph_encoder = PHTokenEncoder(
             input_dim=asph_feature_dim,
-            out_channels=latent_dim_ffnn # Output dimension for ASPH FFNN
+            out_channels=latent_dim_ffnn 
         )
         self.scalar_encoder = ScalarFeatureEncoder(
             input_dim=scalar_feature_dim,
             hidden_dims=ffnn_hidden_dims_scalar,
-            out_channels=latent_dim_ffnn # Output dimension for scalar FFNN
+            out_channels=latent_dim_ffnn
+        )
+        self.decomposition_encoder = DecompositionFeatureEncoder(
+        input_dim=decomposition_feature_dim,
+        out_channels=latent_dim_ffnn
         )
 
         # Calculate the total dimension after concatenating all encoder outputs
@@ -315,14 +319,12 @@ class MultiModalMaterialClassifier(nn.Module):
         kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
         asph_emb = self.asph_encoder(inputs['asph_features'])
         scalar_emb = self.scalar_encoder(inputs['scalar_features'])
+        decomposition_emb = self.decomposition_encoder(inputs['kspace_physics_features']['decomposition_features']) 
 
-        # Concatenate all embeddings into a single comprehensive material embedding
-        combined_emb = torch.cat([crystal_emb, kspace_emb, asph_emb, scalar_emb], dim=-1)
+        combined_emb = torch.cat([crystal_emb, kspace_emb, asph_emb, scalar_emb, decomposition_emb], dim=-1)
 
-        # Pass through shared fusion layers
         fused_output = self.fusion_network(combined_emb)
 
-        # Predict for each task using separate heads
         topology_logits = self.topology_head(fused_output)
         magnetism_logits = self.magnetism_head(fused_output)
 
@@ -330,3 +332,24 @@ class MultiModalMaterialClassifier(nn.Module):
             'topology_logits': topology_logits,
             'magnetism_logits': magnetism_logits
         }
+    
+
+class DecompositionFeatureEncoder(nn.Module):
+    """
+    FFNN encoder for decomposition branches features.
+    """
+    def __init__(self, input_dim: int, out_channels: int):
+        super().__init__()
+        self.network = nn.Sequential(
+            nn.Linear(input_dim, out_channels * 2), 
+            nn.BatchNorm1d(out_channels * 2),
+            nn.ReLU(),
+            nn.Dropout(p=config.DROPOUT_RATE),
+            nn.Linear(out_channels * 2, out_channels),
+            nn.BatchNorm1d(out_channels),
+            nn.ReLU()
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        # features expected shape: (B, input_dim)
+        return self.network(features)

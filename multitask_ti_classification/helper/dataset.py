@@ -68,6 +68,7 @@ class MaterialDataset(Dataset):
         self._kspace_graph_node_feature_dim = None
         self._asph_feature_dim = None
         self._scalar_total_dim = None
+        self._decomposition_feature_dim = None 
 
     def __len__(self) -> int:
         return len(self.metadata_df)
@@ -111,7 +112,7 @@ class MaterialDataset(Dataset):
             kspace_physics_features = { # Matches KSpacePhysicsGraphBuilder._create_physics_features_tensor structure
                 'ebr_features': torch.zeros(5, dtype=torch.float),
                 'topological_indices': torch.zeros(5, dtype=torch.float),
-                'decomposition_features': torch.zeros(2, dtype=torch.float)
+                'decomposition_features': torch.zeros(config.DECOMPOSITION_FEATURE_DIM if config.DECOMPOSITION_FEATURE_DIM else 5, dtype=torch.float)
             }
 
 
@@ -148,6 +149,9 @@ class MaterialDataset(Dataset):
         if self._scalar_total_dim is None:
             self._scalar_total_dim = combined_scalar_features.shape[0]
             config.SCALAR_TOTAL_DIM = self._scalar_total_dim
+        if self._decomposition_feature_dim is None:
+            self._decomposition_feature_dim = kspace_physics_features['decomposition_features'].shape[0]
+            config.DECOMPOSITION_FEATURE_DIM = self._decomposition_feature_dim
 
         # --- 5. Prepare Labels ---
         topology_label_str = row['topological_class']
