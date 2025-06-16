@@ -2,8 +2,7 @@ import os
 from pathlib import Path
 import torch
 
-# --- Paths Configuration ---
-# Set PROJECT_ROOT to the directory where this config.py resides.
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Base directory for your multimodal material database (output of IntegratedMaterialProcessor)
@@ -11,11 +10,7 @@ DATA_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulat
 # Base directory for pre-generated k-space graphs (output of KSpacePhysicsGraphBuilder)
 KSPACE_GRAPHS_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs"
 # Path to the master index file
-MASTER_INDEX_PATH = DATA_DIR / "/scratch/gpfs/as0714/graph_vector_topological_insulator/materials_database.csv"
-
-# --- Classification Labels Mapping ---
-# These mappings must be consistent with how labels are generated in your data pipeline
-# (e.g., in IntegratedMaterialProcessor.generate_and_save_material_record)
+MASTER_INDEX_PATH = DATA_DIR / "metadata"
 
 # Topology Classification
 TOPOLOGY_CLASS_MAPPING = {
