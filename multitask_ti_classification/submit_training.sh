@@ -22,9 +22,9 @@ module load anaconda3/2024.10
 source ~/.bashrc
 conda activate topological_ml 
 
-cd /scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/src
+cd /scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification
 
 echo "Starting Python training script at $(date)"
-python main.py
+python src/main.py
 
 echo "Python training script finished at $(date)"

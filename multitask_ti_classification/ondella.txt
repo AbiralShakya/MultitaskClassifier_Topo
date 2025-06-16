@@ -19,4 +19,4 @@ pip install pandas numpy scikit-learn
 
 cat sbatch_submit_training.sh (after cd into training in folder, in scratch)
 
-and then sbatch submit_training.sh
+sbatch submit_training.sh
