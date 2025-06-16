@@ -61,6 +61,13 @@ LEARNING_RATE = 1e-4
 BATCH_SIZE = 32
 NUM_EPOCHS = 50
 DROPOUT_RATE = 0.2
+PATIENCE = 10 # For early stopping
+
+EGNN_HIDDEN_IRREPS_STR = "64x0e + 32x1o + 16x2e" # As defined in model.py's RealSpaceEGNNEncoder
+EGNN_RADIUS = 5.0 # Atomic interaction radius for EGNN
+
+# KSpace GNN specific parameters
+KSPACE_GNN_NUM_HEADS = 8 # As defined in model.py's KSpaceTransformerGNNEncoder
 
 # Loss weighting for multi-task learning
 # You can tune these weights. Start with equal weights (1.0).

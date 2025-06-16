@@ -1,4 +1,4 @@
-import training.ssl_trainer as train
+from training import classifier_training as trainer
 import helper.config as config
 import os
 from pathlib import Path
@@ -26,5 +26,5 @@ def setup_environment():
 if __name__ == "__main__":
     setup_environment()
     print("\nStarting multi-modal material classification training...")
-    train.main_training_loop()
+    trainer.main_training_loop() # Changed function call
     print("\nTraining process finished.")
