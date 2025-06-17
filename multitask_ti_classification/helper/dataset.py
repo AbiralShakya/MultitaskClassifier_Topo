@@ -138,7 +138,8 @@ class MaterialDataset(Dataset):
         
         # --- 1. Load Crystal Graph ---
         # These nested keys are now treated as flat column names due to JSON flattening
-        crystal_graph_path = self.data_root_dir / row['file_locations.crystal_graph']
+        #crystal_graph_path = self.data_root_dir / row['file_locations.crystal_graph']
+        crystal_graph_path = Path('/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs') / row['jid'] / 'crystal_graph.pkl'
         crystal_graph_dict = load_pickle_data(crystal_graph_path)
         crystal_graph = load_material_graph_from_dict(crystal_graph_dict)
         
