@@ -29,3 +29,7 @@ sbatch submit_training.sh
 pip install torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.7.0+cu126.html
 
 
+ scp -r /Users/abiralshakya/Documents/Research/GraphVectorTopological/multimodal_materials_db_mp/metadata as0714@della.princeton.edu:/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_dp_mp
+
+
+ scp -r /Users/abiralshakya/Documents/Research/GraphVectorTopological/multimodal_materials_db_mp/graphs as0714@della.princeton.edu:/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs

@@ -10,7 +10,7 @@ DATA_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulat
 # Base directory for pre-generated k-space graphs (output of KSpacePhysicsGraphBuilder)
 KSPACE_GRAPHS_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs"
 # Path to the master index file
-MASTER_INDEX_PATH = DATA_DIR / "metadata"
+MASTER_INDEX_PATH = PROJECT_ROOT /  "/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata"
 
 # Topology Classification
 TOPOLOGY_CLASS_MAPPING = {
