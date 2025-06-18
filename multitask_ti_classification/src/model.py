@@ -28,52 +28,62 @@ class EGNNLayer(nn.Module):
         self.tp_messages_ij = FullyConnectedTensorProduct(
             node_irreps_in, edge_irreps_in, hidden_irreps, # input_1, input_2, output
         )
+
+        # --- FIX: Create irreps components as strings, not tuples ---
+        # 1. Separate scalars (l=0) from non-scalars (l>0)
+        irreps_scalars_parts = []
+        for mul, irrep_obj in hidden_irreps:
+            if irrep_obj.l == 0:
+                # Convert numerical parity (irrep_obj.p) to string 'e' or 'o'
+                parity_str = 'e' if irrep_obj.p == 1 else 'o'
+                irreps_scalars_parts.append(f"{mul}x{irrep_obj.l}{parity_str}")
         
-        # --- FIX for AttributeError: 'Irreps' object has no attribute 'filter' ---
-        # Instead of directly using .filter(keep="0e"), we will simplify the Gate
-        # initialization to assume the Gate itself will handle the splitting of `hidden_irreps`
-        # into scalar and gated parts based on typical e3nn Gate design.
-        # This is how Gate is often initialized in newer e3nn versions when not specifying
-        # irreps_gates and irreps_gated explicitly, and relies on its internal logic.
-        # If your e3nn version requires explicit irreps_gates/gated, we'll need to check
-        # its documentation/source for the correct way to form them without `.filter(keep="0e")`.
-        # For now, let's try the simplest form if your e3nn is expecting it.
-        # If this still fails, it means your Gate constructor *does* need specific irreps for gates/gated,
-        # but filter() is not the way to get them.
+        # Join with " + " to create a valid irreps string
+        irreps_scalars = Irreps(" + ".join(irreps_scalars_parts)) if irreps_scalars_parts else Irreps("")
+
+        irreps_gated_parts = []
+        for mul, irrep_obj in hidden_irreps:
+            if irrep_obj.l > 0:
+                # Convert numerical parity (irrep_obj.p) to string 'e' or 'o'
+                parity_str = 'e' if irrep_obj.p == 1 else 'o'
+                irreps_gated_parts.append(f"{mul}x{irrep_obj.l}{parity_str}")
+        
+        irreps_gated = Irreps(" + ".join(irreps_gated_parts)) if irreps_gated_parts else Irreps("")
+        
+        # 2. irreps_gates: A scalar (0e) for each component in irreps_gated.
+        irreps_gates_parts = []
+        for mul, irrep_obj in irreps_gated: # Iterate over the (mul, Irrep_object) pairs for gated parts
+            irreps_gates_parts.append(f"{mul}x0e") # Each gated mul-l irrep gets mul-0e gate
+        
+        irreps_gates = Irreps(" + ".join(irreps_gates_parts)) if irreps_gates_parts else Irreps("")
+
         self.gate_messages = Gate(
-            hidden_irreps,    # irreps_in
-            F.silu,           # act_scalars
-            F.sigmoid         # act_gates (often sigmoid for gates)
+            irreps_in=hidden_irreps,    # The full input irreps to the gate
+            act_scalars=F.silu,         # Activation for the scalar (0e) part
+            irreps_gates=irreps_gates,  # The scalar gates themselves
+            act_gates=F.sigmoid,        # Activation for the gates (often sigmoid for scaling)
+            irreps_gated=irreps_gated   # The non-scalar (l>0) parts to be gated
         )
-        # If the above fails, you might need to revert to explicitly defining irreps_gates and irreps_gated,
-        # but using a manual split or other e3nn helper (like Irreps.remove_lmax(0) for non-scalars)
-        # For example (if this is what your e3nn version expects):
-        # self.gate_messages = Gate(
-        #     irreps_in=hidden_irreps,
-        #     act_scalars=F.silu,
-        #     irreps_gates=hidden_irreps.filter(lmax=0), # Or other way to get 0e part
-        #     act_gates=F.sigmoid,
-        #     irreps_gated=hidden_irreps.filter(lmin=1) # Or other way to get non-0e part
-        # )
-        # But for now, trying the simplest Gate init.
-
-
         self.linear_messages_out = Linear(self.gate_messages.irreps_out, hidden_irreps)
 
         # TP for update (from node_i and aggregated_messages) -> new node irreps
         self.tp_update = FullyConnectedTensorProduct(
             node_irreps_in, hidden_irreps, hidden_irreps, # input_1, input_2, output
         )
-        # --- FIX for AttributeError: 'Irreps' object has no attribute 'filter' (for update gate) ---
+        
+        # --- FIX: Correct Gate initialization for update gate ---
+        # Reuse the same derived irreps for the update gate
         self.gate_update = Gate(
-            hidden_irreps,
-            F.silu,
-            F.sigmoid
+            irreps_in=hidden_irreps,
+            act_scalars=F.silu,
+            irreps_gates=irreps_gates,
+            act_gates=F.sigmoid,
+            irreps_gated=irreps_gated
         )
         self.linear_update_out = Linear(self.gate_update.irreps_out, node_irreps_in) # Output same as input for skip connection
         
     def forward(self, node_features: Irreps, edge_index: torch.Tensor, edge_attr_e3nn: Irreps, 
-                node_attr_scalar_raw: torch.Tensor): # Type hint is Irreps, not IrrepsArray
+                node_attr_scalar_raw: torch.Tensor):
         
         row, col = edge_index
 
@@ -84,14 +94,13 @@ class EGNNLayer(nn.Module):
 
         # 2. Aggregation (sum messages for each node)
         aggregated_messages = torch_geometric.utils.scatter(messages_from_j.array, row, dim=0, dim_size=node_features.size(0), reduce="sum")
-        aggregated_messages_e3nn = self.hidden_irreps(aggregated_messages) # Wrap back into IrrepsArray
+        aggregated_messages_e3nn = self.hidden_irreps(aggregated_messages)
 
         # 3. Update (combine current node features with aggregated messages)
         updated_node_features_tp_output = self.tp_update(node_features, aggregated_messages_e3nn)
         updated_node_features_gated = self.gate_update(updated_node_features_tp_output)
         updated_node_features_temp = self.linear_update_out(updated_node_features_gated)
         
-        # Residual connection: node_features and updated_node_features_temp are both IrrepsArray implicitly
         return node_features + updated_node_features_temp
 
 
@@ -131,8 +140,8 @@ class RealSpaceEGNNEncoder(nn.Module):
     def forward(self, data: PyGData) -> torch.Tensor: # PyG Data object
         x_raw_scalars = data.x # (N_atoms, node_input_scalar_dim) - original scalar features
         
-        # 1. Project input scalar features to e3nn's Irreps structure (this is where the IrrepsArray is created implicitly)
-        x_e3nn = self.initial_projection(x_raw_scalars) # x_e3nn is now an e3nn tensor (IrrepsArray)
+        # 1. Project input scalar features to e3nn's Irreps structure
+        x_e3nn = self.initial_projection(x_raw_scalars) 
 
         # 2. Recompute edge_index and edge_attr (relative positions)
         edge_index = torch_geometric.nn.radius_graph(data.pos, self.radius, data.batch)
@@ -142,9 +151,6 @@ class RealSpaceEGNNEncoder(nn.Module):
         dist = r_vec.norm(dim=-1, keepdim=True)
         normalized_r_vec = r_vec / (dist + 1e-8) 
         
-        # Create the e3nn edge attributes from raw tensors
-        # `Irreps` object itself is callable to wrap a tensor.
-        # Ensure the order matches self.edge_irreps = Irreps("1x1o + 1x0e") -> first 1o then 0e
         edge_attr_e3nn = self.edge_irreps(torch.cat([normalized_r_vec, dist], dim=-1))
 
 
@@ -159,14 +165,10 @@ class RealSpaceEGNNEncoder(nn.Module):
             )
 
         # 4. Global Pooling: Extract INVARIANT (0e) part of node features
-        # --- FIX: Potential .filter() issue here as well depending on e3nn version ---
-        # If your e3nn version doesn't like .filter("0e"), you might need to adjust.
-        # However, filter() for string tags like "0e" is quite standard in recent e3nn.
-        # Let's keep it for now, as the error was specifically in Gate's init.
         invariant_features_per_node = current_node_features_e3nn.filter("0e")
         
         # Global mean pool on the underlying tensor array of these invariant features
-        graph_embedding = global_mean_pool(invariant_features_per_node.array, data.batch) # .array extracts the torch.Tensor
+        graph_embedding = global_mean_pool(invariant_features_per_node.array, data.batch)
 
         # 5. Final projection to LATENT_DIM_GNN
         final_embedding = self.final_linear_0e(graph_embedding)
@@ -182,39 +184,33 @@ class KSpaceTransformerGNNEncoder(nn.Module):
     def __init__(self, node_feature_dim: int, hidden_dim: int, out_channels: int, 
                  n_layers: int = 4, num_heads: int = 8):
         super().__init__()
-        # Initial projection of node features (e.g., k-point coords + irrep encodings)
         self.initial_projection = nn.Linear(node_feature_dim, hidden_dim)
         
         self.layers = nn.ModuleList()
-        self.bns = nn.ModuleList() # Batch normalization layers
+        self.bns = nn.ModuleList()
 
         for i in range(n_layers):
             self.layers.append(TransformerConv(
                 in_channels=hidden_dim,
-                out_channels=hidden_dim, # Removed division by num_heads here, it's usually managed internally or for concat of heads
+                out_channels=hidden_dim,
                 heads=num_heads,
                 dropout=config.DROPOUT_RATE,
-                beta=True # Uses skip connection
+                beta=True
             ))
-            # BatchNorm after each TransformerConv layer
-            self.bns.append(nn.BatchNorm1d(hidden_dim)) # BN dimension should match TransformerConv output, which is hidden_dim if not using head concat/splitting
+            self.bns.append(nn.BatchNorm1d(hidden_dim))
             
     def forward(self, data: PyGData) -> torch.Tensor:
-        # data.x: node features, data.edge_index: graph connectivity, data.batch: batch assignment
         x, edge_index, batch = data.x, data.edge_index, data.batch
         
-        x = self.initial_projection(x) # Project to hidden_dim
+        x = self.initial_projection(x)
         
         for i, layer in enumerate(self.layers):
-            # The previous 'else' block for BatchNorm/ReLU was incorrect as layer is always TransformerConv here.
-            # Applying BN, ReLU, Dropout AFTER the TransformerConv.
             x = layer(x, edge_index) 
-            x = self.bns[i](x) # Apply BatchNorm
-            x = F.relu(x) # Apply ReLU
+            x = self.bns[i](x)
+            x = F.relu(x)
             x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)
 
-        # Global pooling to get a graph-level embedding
-        return global_mean_pool(x, batch) # (B, out_channels)
+        return global_mean_pool(x, batch)
 
 # --- 3. ASPH Encoder ---
 
@@ -226,18 +222,17 @@ class PHTokenEncoder(nn.Module):
     def __init__(self, input_dim: int, out_channels: int):
         super().__init__()
         self.network = nn.Sequential(
-            nn.Linear(input_dim, out_channels * 2), # Expand a bit
+            nn.Linear(input_dim, out_channels * 2),
             nn.BatchNorm1d(out_channels * 2),
             nn.ReLU(),
             nn.Dropout(p=config.DROPOUT_RATE),
-            nn.Linear(out_channels * 2, out_channels), # Project to final output dim
+            nn.Linear(out_channels * 2, out_channels),
             nn.BatchNorm1d(out_channels),
             nn.ReLU()
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        # features expected shape: (B, input_dim)
-        return self.network(features) # (B, out_channels)
+        return self.network(features)
 
 # --- 4. Scalar Features Encoder ---
 
@@ -257,13 +252,12 @@ class ScalarFeatureEncoder(nn.Module):
             in_dim = h_dim
         
         layers.append(nn.Linear(in_dim, out_channels))
-        layers.append(nn.BatchNorm1d(out_channels)) # BatchNorm for the final output
-        layers.append(nn.ReLU()) # Final activation
+        layers.append(nn.BatchNorm1d(out_channels))
+        layers.append(nn.ReLU())
         self.network = nn.Sequential(*layers)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        # features expected shape: (B, input_dim)
-        return self.network(features) # (B, out_channels)
+        return self.network(features)
 
 # --- 5. Main Multi-Modal Classifier ---
 
@@ -283,9 +277,9 @@ class MultiModalMaterialClassifier(nn.Module):
         num_magnetism_classes: int,
         
         # Encoder specific params
-        egnn_hidden_irreps_str: str = "64x0e + 32x1o + 16x2e", # Default for EGNN
+        egnn_hidden_irreps_str: str = "64x0e + 32x1o + 16x2e",
         egnn_num_layers: int = 6,
-        egnn_radius: float = 5.0, # Atomic interaction radius for EGNN
+        egnn_radius: float = 5.0,
         
         kspace_gnn_hidden_channels: int = config.GNN_HIDDEN_CHANNELS,
         kspace_gnn_num_layers: int = config.GNN_NUM_LAYERS,
@@ -295,8 +289,8 @@ class MultiModalMaterialClassifier(nn.Module):
         ffnn_hidden_dims_scalar: List[int] = config.FFNN_HIDDEN_DIMS_SCALAR,
         
         # Shared fusion params
-        latent_dim_gnn: int = config.LATENT_DIM_GNN, # Output dim for both GNN encoders
-        latent_dim_ffnn: int = config.LATENT_DIM_FFNN, # Output dim for both FFNN encoders
+        latent_dim_gnn: int = config.LATENT_DIM_GNN,
+        latent_dim_ffnn: int = config.LATENT_DIM_FFNN,
         fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
     ):
         super().__init__()
@@ -306,8 +300,6 @@ class MultiModalMaterialClassifier(nn.Module):
             hidden_irreps_str=egnn_hidden_irreps_str,
             n_layers=egnn_num_layers,
             radius=egnn_radius,
-            # Note: The output dimension of RealSpaceEGNNEncoder (config.LATENT_DIM_GNN)
-            # is controlled by its final_linear_0e layer.
         )
         self.kspace_encoder = KSpaceTransformerGNNEncoder(
             node_feature_dim=kspace_node_feature_dim,
@@ -330,11 +322,8 @@ class MultiModalMaterialClassifier(nn.Module):
         out_channels=latent_dim_ffnn
         )
 
-        # --- CRITICAL FIX 2: Correct total_fused_dim calculation ---
-        # You have 5 encoders. 2 GNNs output latent_dim_gnn, 3 FFNNs output latent_dim_ffnn.
         total_fused_dim = (latent_dim_gnn * 2) + (latent_dim_ffnn * 3) 
 
-        # Shared fusion layers (MLP)
         fusion_layers = []
         in_dim_fusion = total_fused_dim
         for h_dim in fusion_hidden_dims:
@@ -345,12 +334,10 @@ class MultiModalMaterialClassifier(nn.Module):
             in_dim_fusion = h_dim 
         self.fusion_network = nn.Sequential(*fusion_layers)
 
-        # Output heads for each task
         self.topology_head = nn.Linear(in_dim_fusion, num_topology_classes)
         self.magnetism_head = nn.Linear(in_dim_fusion, num_magnetism_classes)
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        # Encode each modality
         crystal_emb = self.crystal_encoder(inputs['crystal_graph'])
         kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
         asph_emb = self.asph_encoder(inputs['asph_features'])
@@ -387,5 +374,4 @@ class DecompositionFeatureEncoder(nn.Module):
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
-        # features expected shape: (B, input_dim)
         return self.network(features)

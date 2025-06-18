@@ -1,0 +1,3 @@
+Filtered out 5 materials due to undefined topological or magnetic types.
+Final dataset re-initialized with fitted scaler.
+Dataset split: Train=23172, Val=2897, Test=2897

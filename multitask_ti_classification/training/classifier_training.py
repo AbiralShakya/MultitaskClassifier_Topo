@@ -27,7 +27,8 @@ from src.model import MultiModalMaterialClassifier
 
 torch.serialization.add_safe_globals([
     torch_geometric.data.data.DataEdgeAttr,
-    torch_geometric.data.data.DataTensorAttr # ADD THIS LINE
+    torch_geometric.data.data.DataTensorAttr,
+    torch_geometric.data.storage.GlobalStorage
 ])
 
 def compute_metrics(predictions, targets, num_classes, task_name):

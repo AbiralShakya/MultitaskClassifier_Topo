@@ -24,9 +24,12 @@ from helper.topo_utils import SpaceGroupManager, load_material_graph_from_dict, 
 # (e.g., in your main training script, or at the top of this module if it's imported early)
 # This addresses the 'WeightsUnpickler error: Unsupported global: GLOBAL torch_geometric.data.data.DataEdgeAttr'
 # It makes torch.load safer by explicitly allowing this type.
-torch.serialization.add_safe_globals([torch_geometric.data.data.DataEdgeAttr])
-# --- END GLOBAL SETTING ---
 
+torch.serialization.add_safe_globals([
+    torch_geometric.data.data.DataEdgeAttr,
+    torch_geometric.data.data.DataTensorAttr,
+    torch_geometric.data.storage.GlobalStorage 
+])
 
 # Suppress specific warnings from pandas when mapping values that might not exist
 warnings.filterwarnings("ignore", ".*is not in the top-level domain.*", UserWarning)
