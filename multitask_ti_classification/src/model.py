@@ -28,14 +28,41 @@ class EGNNLayer(nn.Module):
         self.tp_messages_ij = FullyConnectedTensorProduct(
             node_irreps_in, edge_irreps_in, hidden_irreps, # input_1, input_2, output
         )
-        self.gate_messages = Gate(hidden_irreps)
+
+        # --- CRITICAL FIX 1: Correct Gate initialization for messages ---
+        # Derive the required irreps for Gate from hidden_irreps
+        _irreps_scalars = hidden_irreps.filter(keep="0e")
+        _irreps_gated_parts = [ir for ir in hidden_irreps if ir.l > 0]
+
+        _gate_irreps_str = []
+        for ir in _irreps_gated_parts:
+            _gate_irreps_str.append(f"{ir.mul}x0e")
+        _irreps_gates = Irreps("+".join(_gate_irreps_str)) if _gate_irreps_str else Irreps("")
+        _irreps_gated = Irreps("+".join([str(ir) for ir in _irreps_gated_parts])) if _irreps_gated_parts else Irreps("")
+
+        self.gate_messages = Gate(
+            irreps_in=hidden_irreps, # The full input irreps to the gate
+            act_scalars=F.silu,      # Activation for scalar part (common: SiLU/Swish)
+            irreps_gates=_irreps_gates, # Irreps for the gating signals (multiplicity x 0e)
+            act_gates=F.sigmoid,     # Activation for the gates themselves (common: Sigmoid)
+            irreps_gated=_irreps_gated # Irreps that are actually gated (non-scalars)
+        )
         self.linear_messages_out = Linear(self.gate_messages.irreps_out, hidden_irreps)
 
         # TP for update (from node_i and aggregated_messages) -> new node irreps
         self.tp_update = FullyConnectedTensorProduct(
             node_irreps_in, hidden_irreps, hidden_irreps, # input_1, input_2, output
         )
-        self.gate_update = Gate(hidden_irreps)
+        
+        # --- CRITICAL FIX 1: Correct Gate initialization for update ---
+        # Reuse the same derived irreps for the update gate, as it also operates on hidden_irreps
+        self.gate_update = Gate(
+            irreps_in=hidden_irreps,
+            act_scalars=F.silu,
+            irreps_gates=_irreps_gates,
+            act_gates=F.sigmoid,
+            irreps_gated=_irreps_gated
+        )
         self.linear_update_out = Linear(self.gate_update.irreps_out, node_irreps_in) # Output same as input for skip connection
         
     def forward(self, node_features: Irreps, edge_index: torch.Tensor, edge_attr_e3nn: Irreps, 
@@ -44,20 +71,22 @@ class EGNNLayer(nn.Module):
         row, col = edge_index
 
         # 1. Message passing
-        messages_from_j = self.linear_messages_out(self.gate_messages(
-            self.tp_messages_ij(node_features[col], edge_attr_e3nn)
-        ))
+        # Ensure that tp_messages_ij outputs an IrrepsArray that Gate can handle.
+        # It's good practice to ensure the output of TP matches the irreps_in of the next module.
+        # tp_messages_ij outputs hidden_irreps, which matches gate_messages.irreps_in (hidden_irreps).
+        messages_tp_output = self.tp_messages_ij(node_features[col], edge_attr_e3nn)
+        messages_gated = self.gate_messages(messages_tp_output) # Pass IrrepsArray to Gate
+        messages_from_j = self.linear_messages_out(messages_gated)
 
         # 2. Aggregation (sum messages for each node)
         aggregated_messages = torch_geometric.utils.scatter(messages_from_j.array, row, dim=0, dim_size=node_features.size(0), reduce="sum")
-        # Need to wrap aggregated_messages back into Irreps, or ensure `scatter` returns IrrepsArray if it's e3nn's scatter
-        # For PyG's scatter, you get a raw tensor, so you need to re-wrap it with its irreps
         aggregated_messages_e3nn = self.hidden_irreps(aggregated_messages) # Wrap back into IrrepsArray
 
         # 3. Update (combine current node features with aggregated messages)
-        updated_node_features_temp = self.linear_update_out(self.gate_update(
-            self.tp_update(node_features, aggregated_messages_e3nn) # Use the re-wrapped tensor
-        ))
+        # tp_update outputs hidden_irreps, which matches gate_update.irreps_in (hidden_irreps).
+        updated_node_features_tp_output = self.tp_update(node_features, aggregated_messages_e3nn)
+        updated_node_features_gated = self.gate_update(updated_node_features_tp_output) # Pass IrrepsArray to Gate
+        updated_node_features_temp = self.linear_update_out(updated_node_features_gated)
         
         # Residual connection: node_features and updated_node_features_temp are both IrrepsArray implicitly
         return node_features + updated_node_features_temp
@@ -170,10 +199,9 @@ class KSpaceTransformerGNNEncoder(nn.Module):
         x = self.initial_projection(x) # Project to hidden_dim
         
         for i, layer in enumerate(self.layers):
-            if isinstance(layer, TransformerConv):
-                x = layer(x, edge_index)
-            else: # BatchNorm, ReLU
-                x = layer(x)
+            # The previous 'else' block for BatchNorm/ReLU was incorrect as layer is always TransformerConv here.
+            # Applying BN, ReLU, Dropout AFTER the TransformerConv.
+            x = layer(x, edge_index) 
             x = self.bns[i](x) # Apply BatchNorm
             x = F.relu(x) # Apply ReLU
             x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)

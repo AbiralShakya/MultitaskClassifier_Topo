@@ -97,7 +97,7 @@ BASE_DECOMPOSITION_FEATURE_DIM = 2
 #     "R2R2", "T2T2", "U2U2", "V2V2", "X2X2", "Y2Y2", "Z2Z2", "Γ2Γ2", "2GP2",
 # ])
 
-with open('/Users/abiralshakya/Documents/Research/MultitaskClassifier_Topo/multitask_ti_classification/irrep_unique', 'rb') as fp:
+with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
     ALL_POSSIBLE_IRREPS = pickle.load(fp)
 
 # MAX_DECOMPOSITION_INDICES_LEN: Maximum expected length of the 'decomposition_indices' list
