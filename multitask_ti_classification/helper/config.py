@@ -87,7 +87,7 @@ ASPH_FEATURE_DIM = 63  # Confirmed from your previous config.
 
 BAND_REP_FEATURE_DIM = 4756 # Confirmed from your previous config.
 
-KSPACE_GRAPH_NODE_FEATURE_DIM = 100 # Original value. This is the `x.shape[1]` for kspace_graph.pt
+KSPACE_GRAPH_NODE_FEATURE_DIM = 10 # Original value. This is the `x.shape[1]` for kspace_graph.pt
                                   # You need to confirm this from your kspace_graph.pt files.
                                   # This might be (3 for k-coords) + (size of irrep embedding/one-hot) etc.
 
