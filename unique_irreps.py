@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 from typing import Union
 import warnings
+import pickle
 
 def analyze_kspace_metadata(base_dir: Union[str, Path]):
     """
@@ -79,6 +80,10 @@ def analyze_kspace_metadata(base_dir: Union[str, Path]):
     #print(f"ALL_POSSIBLE_IRREPS = {final_all_possible_irreps}")
     print(f"\nCopy this value for MAX_DECOMPOSITION_INDICES_LEN in helper/config.py:")
     print(f"MAX_DECOMPOSITION_INDICES_LEN = {max_decomposition_indices_len}")
+
+    
+    with open('/Users/abiralshakya/Documents/Research/MultitaskClassifier_Topo/multitask_ti_classification/irrep_unique', 'wb') as fp:
+        pickle.dump(final_all_possible_irreps, fp)
 
     return final_all_possible_irreps, max_decomposition_indices_len
 

@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import torch
-
+import pickle
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -92,18 +92,17 @@ KSPACE_GRAPH_NODE_FEATURE_DIM = 100 # Original value. This is the `x.shape[1]` f
 # --- K-space Decomposition Features ---
 BASE_DECOMPOSITION_FEATURE_DIM = 2
 
-# ALL_POSSIBLE_IRREPS: A comprehensive, fixed list of ALL unique irrep names
-# that can appear in ANY 'SG_xxx/metadata.json' across your entire dataset.
-# You need to scan your SG_xxx/metadata.json files to build this definitive list.
-# Ensure consistent ordering (e.g., sorted alphabetically).
-ALL_POSSIBLE_IRREPS = sorted([
-    "R1", "T1", "U1", "V1", "X1", "Y1", "Z1", "Γ1", "GP1",
-    "R2R2", "T2T2", "U2U2", "V2V2", "X2X2", "Y2Y2", "Z2Z2", "Γ2Γ2", "2GP2",
-])
+# ALL_POSSIBLE_IRREPS = sorted([
+#     "R1", "T1", "U1", "V1", "X1", "Y1", "Z1", "Γ1", "GP1",
+#     "R2R2", "T2T2", "U2U2", "V2V2", "X2X2", "Y2Y2", "Z2Z2", "Γ2Γ2", "2GP2",
+# ])
+
+with open('/Users/abiralshakya/Documents/Research/MultitaskClassifier_Topo/multitask_ti_classification/irrep_unique', 'rb') as fp:
+    ALL_POSSIBLE_IRREPS = pickle.load(fp)
 
 # MAX_DECOMPOSITION_INDICES_LEN: Maximum expected length of the 'decomposition_indices' list
 # in any 'SG_xxx/metadata.json'.
-MAX_DECOMPOSITION_INDICES_LEN = 108 
+MAX_DECOMPOSITION_INDICES_LEN = 100
 
 # DECOMPOSITION_FEATURE_DIM: Total dimension of the combined decomposition features.
 # This value is calculated based on the above three and *must* match the input_dim
