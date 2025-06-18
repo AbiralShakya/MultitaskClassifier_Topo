@@ -12,6 +12,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import warnings
 import random
+import torch_geometric
 
 # Import from local modules
 from helper import config
@@ -24,6 +25,10 @@ from src.model import MultiModalMaterialClassifier
 # from torch_geometric.data import DataEdgeAttr # If you want to be super explicit
 # torch.serialization.add_safe_globals([DataEdgeAttr])
 
+torch.serialization.add_safe_globals([
+    torch_geometric.data.data.DataEdgeAttr,
+    torch_geometric.data.data.DataTensorAttr # ADD THIS LINE
+])
 
 def compute_metrics(predictions, targets, num_classes, task_name):
     """Computes accuracy and detailed classification report."""

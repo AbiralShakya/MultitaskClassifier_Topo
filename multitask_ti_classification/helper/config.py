@@ -5,6 +5,8 @@ import pickle
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+SEED = 42
+
 # Base directory for your multimodal material database (output of IntegratedMaterialProcessor)
 DATA_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_db_mp")
 # Base directory for pre-generated k-space graphs (output of KSpacePhysicsGraphBuilder)

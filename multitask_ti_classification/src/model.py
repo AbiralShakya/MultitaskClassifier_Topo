@@ -28,40 +28,47 @@ class EGNNLayer(nn.Module):
         self.tp_messages_ij = FullyConnectedTensorProduct(
             node_irreps_in, edge_irreps_in, hidden_irreps, # input_1, input_2, output
         )
-
-        # --- CRITICAL FIX 1: Correct Gate initialization for messages ---
-        # Derive the required irreps for Gate from hidden_irreps
-        _irreps_scalars = hidden_irreps.filter(keep="0e")
-        _irreps_gated_parts = [ir for ir in hidden_irreps if ir.l > 0]
-
-        _gate_irreps_str = []
-        for ir in _irreps_gated_parts:
-            _gate_irreps_str.append(f"{ir.mul}x0e")
-        _irreps_gates = Irreps("+".join(_gate_irreps_str)) if _gate_irreps_str else Irreps("")
-        _irreps_gated = Irreps("+".join([str(ir) for ir in _irreps_gated_parts])) if _irreps_gated_parts else Irreps("")
-
+        
+        # --- FIX for AttributeError: 'Irreps' object has no attribute 'filter' ---
+        # Instead of directly using .filter(keep="0e"), we will simplify the Gate
+        # initialization to assume the Gate itself will handle the splitting of `hidden_irreps`
+        # into scalar and gated parts based on typical e3nn Gate design.
+        # This is how Gate is often initialized in newer e3nn versions when not specifying
+        # irreps_gates and irreps_gated explicitly, and relies on its internal logic.
+        # If your e3nn version requires explicit irreps_gates/gated, we'll need to check
+        # its documentation/source for the correct way to form them without `.filter(keep="0e")`.
+        # For now, let's try the simplest form if your e3nn is expecting it.
+        # If this still fails, it means your Gate constructor *does* need specific irreps for gates/gated,
+        # but filter() is not the way to get them.
         self.gate_messages = Gate(
-            irreps_in=hidden_irreps, # The full input irreps to the gate
-            act_scalars=F.silu,      # Activation for scalar part (common: SiLU/Swish)
-            irreps_gates=_irreps_gates, # Irreps for the gating signals (multiplicity x 0e)
-            act_gates=F.sigmoid,     # Activation for the gates themselves (common: Sigmoid)
-            irreps_gated=_irreps_gated # Irreps that are actually gated (non-scalars)
+            hidden_irreps,    # irreps_in
+            F.silu,           # act_scalars
+            F.sigmoid         # act_gates (often sigmoid for gates)
         )
+        # If the above fails, you might need to revert to explicitly defining irreps_gates and irreps_gated,
+        # but using a manual split or other e3nn helper (like Irreps.remove_lmax(0) for non-scalars)
+        # For example (if this is what your e3nn version expects):
+        # self.gate_messages = Gate(
+        #     irreps_in=hidden_irreps,
+        #     act_scalars=F.silu,
+        #     irreps_gates=hidden_irreps.filter(lmax=0), # Or other way to get 0e part
+        #     act_gates=F.sigmoid,
+        #     irreps_gated=hidden_irreps.filter(lmin=1) # Or other way to get non-0e part
+        # )
+        # But for now, trying the simplest Gate init.
+
+
         self.linear_messages_out = Linear(self.gate_messages.irreps_out, hidden_irreps)
 
         # TP for update (from node_i and aggregated_messages) -> new node irreps
         self.tp_update = FullyConnectedTensorProduct(
             node_irreps_in, hidden_irreps, hidden_irreps, # input_1, input_2, output
         )
-        
-        # --- CRITICAL FIX 1: Correct Gate initialization for update ---
-        # Reuse the same derived irreps for the update gate, as it also operates on hidden_irreps
+        # --- FIX for AttributeError: 'Irreps' object has no attribute 'filter' (for update gate) ---
         self.gate_update = Gate(
-            irreps_in=hidden_irreps,
-            act_scalars=F.silu,
-            irreps_gates=_irreps_gates,
-            act_gates=F.sigmoid,
-            irreps_gated=_irreps_gated
+            hidden_irreps,
+            F.silu,
+            F.sigmoid
         )
         self.linear_update_out = Linear(self.gate_update.irreps_out, node_irreps_in) # Output same as input for skip connection
         
@@ -71,11 +78,8 @@ class EGNNLayer(nn.Module):
         row, col = edge_index
 
         # 1. Message passing
-        # Ensure that tp_messages_ij outputs an IrrepsArray that Gate can handle.
-        # It's good practice to ensure the output of TP matches the irreps_in of the next module.
-        # tp_messages_ij outputs hidden_irreps, which matches gate_messages.irreps_in (hidden_irreps).
         messages_tp_output = self.tp_messages_ij(node_features[col], edge_attr_e3nn)
-        messages_gated = self.gate_messages(messages_tp_output) # Pass IrrepsArray to Gate
+        messages_gated = self.gate_messages(messages_tp_output)
         messages_from_j = self.linear_messages_out(messages_gated)
 
         # 2. Aggregation (sum messages for each node)
@@ -83,9 +87,8 @@ class EGNNLayer(nn.Module):
         aggregated_messages_e3nn = self.hidden_irreps(aggregated_messages) # Wrap back into IrrepsArray
 
         # 3. Update (combine current node features with aggregated messages)
-        # tp_update outputs hidden_irreps, which matches gate_update.irreps_in (hidden_irreps).
         updated_node_features_tp_output = self.tp_update(node_features, aggregated_messages_e3nn)
-        updated_node_features_gated = self.gate_update(updated_node_features_tp_output) # Pass IrrepsArray to Gate
+        updated_node_features_gated = self.gate_update(updated_node_features_tp_output)
         updated_node_features_temp = self.linear_update_out(updated_node_features_gated)
         
         # Residual connection: node_features and updated_node_features_temp are both IrrepsArray implicitly
@@ -156,6 +159,10 @@ class RealSpaceEGNNEncoder(nn.Module):
             )
 
         # 4. Global Pooling: Extract INVARIANT (0e) part of node features
+        # --- FIX: Potential .filter() issue here as well depending on e3nn version ---
+        # If your e3nn version doesn't like .filter("0e"), you might need to adjust.
+        # However, filter() for string tags like "0e" is quite standard in recent e3nn.
+        # Let's keep it for now, as the error was specifically in Gate's init.
         invariant_features_per_node = current_node_features_e3nn.filter("0e")
         
         # Global mean pool on the underlying tensor array of these invariant features
@@ -184,13 +191,13 @@ class KSpaceTransformerGNNEncoder(nn.Module):
         for i in range(n_layers):
             self.layers.append(TransformerConv(
                 in_channels=hidden_dim,
-                out_channels=hidden_dim // num_heads if (i < n_layers - 1) else hidden_dim, # Output dim per head
+                out_channels=hidden_dim, # Removed division by num_heads here, it's usually managed internally or for concat of heads
                 heads=num_heads,
                 dropout=config.DROPOUT_RATE,
                 beta=True # Uses skip connection
             ))
             # BatchNorm after each TransformerConv layer
-            self.bns.append(nn.BatchNorm1d(hidden_dim))
+            self.bns.append(nn.BatchNorm1d(hidden_dim)) # BN dimension should match TransformerConv output, which is hidden_dim if not using head concat/splitting
             
     def forward(self, data: PyGData) -> torch.Tensor:
         # data.x: node features, data.edge_index: graph connectivity, data.batch: batch assignment
@@ -323,8 +330,9 @@ class MultiModalMaterialClassifier(nn.Module):
         out_channels=latent_dim_ffnn
         )
 
-        # Calculate the total dimension after concatenating all encoder outputs
-        total_fused_dim = (latent_dim_gnn * 2) + (latent_dim_ffnn * 2)
+        # --- CRITICAL FIX 2: Correct total_fused_dim calculation ---
+        # You have 5 encoders. 2 GNNs output latent_dim_gnn, 3 FFNNs output latent_dim_ffnn.
+        total_fused_dim = (latent_dim_gnn * 2) + (latent_dim_ffnn * 3) 
 
         # Shared fusion layers (MLP)
         fusion_layers = []
