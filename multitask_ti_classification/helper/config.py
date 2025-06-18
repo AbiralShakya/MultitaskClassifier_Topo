@@ -6,11 +6,11 @@ import torch
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Base directory for your multimodal material database (output of IntegratedMaterialProcessor)
-DATA_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_db_mp"
+DATA_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_db_mp")
 # Base directory for pre-generated k-space graphs (output of KSpacePhysicsGraphBuilder)
-KSPACE_GRAPHS_DIR = PROJECT_ROOT / "/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs"
-# Path to the master index file
-MASTER_INDEX_PATH = PROJECT_ROOT /  "/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata"
+KSPACE_GRAPHS_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs")
+# Path to the master index directory (containing individual JSON metadata files)
+MASTER_INDEX_PATH = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata")
 
 # Topology Classification
 TOPOLOGY_CLASS_MAPPING = {
@@ -64,8 +64,6 @@ EGNN_RADIUS = 5.0 # Atomic interaction radius for EGNN
 KSPACE_GNN_NUM_HEADS = 8 # As defined in model.py's KSpaceTransformerGNNEncoder
 
 # Loss weighting for multi-task learning
-# You can tune these weights. Start with equal weights (1.0).
-# If one task is performing poorly or has significantly fewer samples, adjust its weight.
 LOSS_WEIGHT_TOPOLOGY = 1.0
 LOSS_WEIGHT_MAGNETISM = 1.0
 
@@ -76,13 +74,52 @@ TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
 TEST_RATIO = 0.1 
 
-ASPH_FEATURE_DIM = 63  
-BAND_REP_FEATURE_DIM = 4756
-CRYSTAL_NODE_FEATURE_DIM = 3
-KSPACE_GRAPH_NODE_FEATURE_DIM = 100 # It's 3 (k-coords) + irrep_vocab_size + branch_irrep_vocab_size + decomp_vocab_size
-                  
-SCALAR_TOTAL_DIM = None
-DECOMPOSITION_FEATURE_DIM = None 
+# --- Feature Dimensions (YOU MUST SET THESE ACCURATELY) ---
+# Inspect your data to get these dimensions.
+# For example, if CRYSTAL_NODE_FEATURE_DIM is the output of your featurizer for atomic properties.
+CRYSTAL_NODE_FEATURE_DIM = 3 # Original value, if it's atomic number, could be 1. If it's one-hot, much larger.
+                           # Based on your previous code, it seems to be 3 (atomic number, period, group).
+                           # Please confirm.
 
+ASPH_FEATURE_DIM = 63  # Confirmed from your previous config.
+
+BAND_REP_FEATURE_DIM = 4756 # Confirmed from your previous config.
+
+KSPACE_GRAPH_NODE_FEATURE_DIM = 100 # Original value. This is the `x.shape[1]` for kspace_graph.pt
+                                  # You need to confirm this from your kspace_graph.pt files.
+                                  # This might be (3 for k-coords) + (size of irrep embedding/one-hot) etc.
+
+# --- K-space Decomposition Features ---
+BASE_DECOMPOSITION_FEATURE_DIM = 2
+
+# ALL_POSSIBLE_IRREPS: A comprehensive, fixed list of ALL unique irrep names
+# that can appear in ANY 'SG_xxx/metadata.json' across your entire dataset.
+# You need to scan your SG_xxx/metadata.json files to build this definitive list.
+# Ensure consistent ordering (e.g., sorted alphabetically).
+ALL_POSSIBLE_IRREPS = sorted([
+    "R1", "T1", "U1", "V1", "X1", "Y1", "Z1", "Γ1", "GP1",
+    "R2R2", "T2T2", "U2U2", "V2V2", "X2X2", "Y2Y2", "Z2Z2", "Γ2Γ2", "2GP2",
+])
+
+# MAX_DECOMPOSITION_INDICES_LEN: Maximum expected length of the 'decomposition_indices' list
+# in any 'SG_xxx/metadata.json'.
+MAX_DECOMPOSITION_INDICES_LEN = 108 
+
+# DECOMPOSITION_FEATURE_DIM: Total dimension of the combined decomposition features.
+# This value is calculated based on the above three and *must* match the input_dim
+# of your DecompositionFeatureEncoder. It will be explicitly set in MaterialDataset.__init__.
+DECOMPOSITION_FEATURE_DIM = BASE_DECOMPOSITION_FEATURE_DIM + \
+                            len(ALL_POSSIBLE_IRREPS) + \
+                            MAX_DECOMPOSITION_INDICES_LEN
+
+# SCALAR_TOTAL_DIM: Total dimension of combined scalar features (band_rep_features + metadata_features)
+# This will be BAND_REP_FEATURE_DIM + the number of columns in `scalar_features_columns`
+# defined in your MaterialDataset.
+SCALAR_TOTAL_DIM = BAND_REP_FEATURE_DIM + len([ # These are the columns in your MaterialDataset's scalar_features_columns
+    'band_gap', 'formation_energy', 'density', 'volume', 'nsites',
+    'space_group_number', 'total_magnetization', 'energy_above_hull'
+])
+
+# --- Model Saving ---
 MODEL_SAVE_DIR = PROJECT_ROOT / "saved_models"
 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
