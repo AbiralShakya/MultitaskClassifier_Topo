@@ -144,8 +144,9 @@ class MaterialDataset(Dataset):
         crystal_graph = load_material_graph_from_dict(crystal_graph_dict)
         
         # --- 2. Load ASPH Features ---
-        asph_features_path = self.data_root_dir / row['file_locations.point_cloud']
+        asph_features_path = self.data_root_dir / "vectorized_features" / f"{row['jid']}_asph.npy"
         asph_features = torch.tensor(np.load(asph_features_path), dtype=torch.float)
+
 
         # --- 3. Load K-space Graph and Physics Features (from shared files) ---
         sg_number = row['space_group_number']
@@ -172,7 +173,7 @@ class MaterialDataset(Dataset):
 
 
         # --- 4. Extract Scalar Features (Band Reps + Metadata) ---
-        band_rep_features_path = self.data_root_dir / row['file_locations.vectorized_features_dir'] / 'band_rep_features.npy'
+        band_rep_features_path = self.data_root_dir / "vectorized_features" / row['jid'] / 'band_rep_features.npy'
         band_rep_features = torch.tensor(np.load(band_rep_features_path), dtype=torch.float)
         
         scalar_metadata_features = [row[col] for col in self.scalar_features_columns]
