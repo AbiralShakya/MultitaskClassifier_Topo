@@ -1,3 +1,58 @@
 Filtered out 5 materials due to undefined topological or magnetic types.
 Final dataset re-initialized with fitted scaler.
 Dataset split: Train=23172, Val=2897, Test=2897
+
+took 46:35 min for 50 epochs
+
+Confusion Matrix:
+[[   0  230  192]
+ [   0  858  288]
+ [   0  293 1036]]
+
+--- Magnetism Classification Metrics ---
+Accuracy: 0.7204
+Classification Report:
+{
+  "0": {
+    "precision": 0.721027064538515,
+    "recall": 0.9985583853916387,
+    "f1-score": 0.8373967358452549,
+    "support": 2081.0
+  },
+  "1": {
+    "precision": 0.5714285714285714,
+    "recall": 0.013201320132013201,
+    "f1-score": 0.025806451612903226,
+    "support": 606.0
+  },
+  "2": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 33.0
+  },
+  "3": {
+    "precision": 1.0,
+    "recall": 0.005649717514124294,
+    "f1-score": 0.011235955056179775,
+    "support": 177.0
+  },
+  "accuracy": 0.7204004142216086,
+  "macro avg": {
+    "precision": 0.5731139089917716,
+    "recall": 0.25435235575944404,
+    "f1-score": 0.21860978562858446,
+    "support": 2897.0
+  },
+  "weighted avg": {
+    "precision": 0.6985650795962596,
+    "recall": 0.7204004142216086,
+    "f1-score": 0.607611350022899,
+    "support": 2897.0
+  }
+}
+Confusion Matrix:
+[[2078    3    0    0]
+ [ 598    8    0    0]
+ [  33    0    0    0]
+ [ 173    3    0    1]]
