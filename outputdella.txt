@@ -3,6 +3,42 @@ Final dataset re-initialized with fitted scaler.
 Dataset split: Train=23172, Val=2897, Test=2897
 
 took 46:35 min for 50 epochs
+-- Topology Classification Metrics ---
+Accuracy: 0.6538
+Classification Report:
+{
+  "0": {
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1-score": 0.0,
+    "support": 422.0
+  },
+  "1": {
+    "precision": 0.6212889210716872,
+    "recall": 0.7486910994764397,
+    "f1-score": 0.6790660862683023,
+    "support": 1146.0
+  },
+  "2": {
+    "precision": 0.683377308707124,
+    "recall": 0.7795334838224228,
+    "f1-score": 0.7282952548330405,
+    "support": 1329.0
+  },
+  "accuracy": 0.6537797721781153,
+  "macro avg": {
+    "precision": 0.43488874325960375,
+    "recall": 0.5094081944329542,
+    "f1-score": 0.4691204470337809,
+    "support": 2897.0
+  },
+  "weighted avg": {
+    "precision": 0.5592701231687682,
+    "recall": 0.6537797721781153,
+    "f1-score": 0.6027318358773163,
+    "support": 2897.0
+  }
+}
 
 Confusion Matrix:
 [[   0  230  192]
@@ -56,3 +92,6 @@ Confusion Matrix:
  [ 598    8    0    0]
  [  33    0    0    0]
  [ 173    3    0    1]]
+
+
+

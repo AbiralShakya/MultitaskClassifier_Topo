@@ -40,20 +40,20 @@ class EGNNLayer(nn.Module):
         # Direct linear path for update
         self.linear_update_direct = Linear(node_irreps_in, hidden_irreps)
 
-        print(f"EGNNLayer init:")
-        print(f"  node_irreps_in: {node_irreps_in}")
-        print(f"  edge_irreps_in: {edge_irreps_in}")
-        print(f"  hidden_irreps: {hidden_irreps}")
-        print(f"  tp_messages_ij.irreps_out: {self.tp_messages_ij.irreps_out}")
-        print(f"  tp_update.irreps_out: {self.tp_update.irreps_out}")
+        # print(f"EGNNLayer init:")
+        # print(f"  node_irreps_in: {node_irreps_in}")
+        # print(f"  edge_irreps_in: {edge_irreps_in}")
+        # print(f"  hidden_irreps: {hidden_irreps}")
+        # print(f"  tp_messages_ij.irreps_out: {self.tp_messages_ij.irreps_out}")
+        # print(f"  tp_update.irreps_out: {self.tp_update.irreps_out}")
         
     def forward(self, node_features, edge_index: torch.Tensor, edge_attr_tensor: torch.Tensor, 
                 node_attr_scalar_raw: torch.Tensor):
         
-        print(f"Forward pass debug:")
-        print(f"  node_features.shape: {node_features.shape}")
-        print(f"  edge_attr_tensor.shape: {edge_attr_tensor.shape}")
-        print(f"  edge_index.shape: {edge_index.shape}")
+        # print(f"Forward pass debug:")
+        # print(f"  node_features.shape: {node_features.shape}")
+        # print(f"  edge_attr_tensor.shape: {edge_attr_tensor.shape}")
+        # print(f"  edge_index.shape: {edge_index.shape}")
         
         row, col = edge_index
 
@@ -64,33 +64,33 @@ class EGNNLayer(nn.Module):
         
         # Create proper e3nn edge attributes: concatenate scalar + vector
         edge_attr_e3nn = torch.cat([dist, r_vec], dim=-1)  # (num_edges, 4)
-        print(f"  edge_attr_e3nn.shape: {edge_attr_e3nn.shape}")
+      #  print(f"  edge_attr_e3nn.shape: {edge_attr_e3nn.shape}")
 
         # 1. Message passing with both tensor product and direct paths
         messages_tp_output = self.tp_messages_ij(node_features[col], edge_attr_e3nn)
-        print(f"  messages_tp_output.shape: {messages_tp_output.shape}")
+      #  print(f"  messages_tp_output.shape: {messages_tp_output.shape}")
         
         messages_direct = self.linear_messages_direct(node_features[col])
         messages_from_j = messages_tp_output + messages_direct
-        print(f"  messages_from_j.shape: {messages_from_j.shape}")
+      #  print(f"  messages_from_j.shape: {messages_from_j.shape}")
 
         # 2. Aggregation (sum messages for each node)
         aggregated_messages = torch_geometric.utils.scatter(
             messages_from_j, row, dim=0, dim_size=node_features.size(0), reduce="sum"
         )
-        print(f"  aggregated_messages.shape: {aggregated_messages.shape}")
+     #   print(f"  aggregated_messages.shape: {aggregated_messages.shape}")
 
         # 3. Update with both tensor product and direct paths
         updated_node_features_tp_output = self.tp_update(node_features, aggregated_messages)
-        print(f"  updated_node_features_tp_output.shape: {updated_node_features_tp_output.shape}")
+     #   print(f"  updated_node_features_tp_output.shape: {updated_node_features_tp_output.shape}")
         
         updated_node_features_direct = self.linear_update_direct(node_features)
         updated_node_features = updated_node_features_tp_output + updated_node_features_direct
-        print(f"  updated_node_features.shape: {updated_node_features.shape}")
+      #  print(f"  updated_node_features.shape: {updated_node_features.shape}")
         
         # Residual connection
         result = node_features + updated_node_features
-        print(f"  result.shape: {result.shape}")
+      #  print(f"  result.shape: {result.shape}")
         
         return result
 
@@ -394,18 +394,18 @@ class MultiModalMaterialClassifier(nn.Module):
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         crystal_emb = self.crystal_encoder(inputs['crystal_graph'])
-        print(f"DEBUG: crystal_emb shape: {crystal_emb.shape}") # Add this
+      #  print(f"DEBUG: crystal_emb shape: {crystal_emb.shape}") # Add this
         kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
-        print(f"DEBUG: kspace_emb shape: {kspace_emb.shape}") # Add this
+       # print(f"DEBUG: kspace_emb shape: {kspace_emb.shape}") # Add this
         asph_emb = self.asph_encoder(inputs['asph_features'])
-        print(f"DEBUG: asph_emb shape: {asph_emb.shape}") # Add this
+        #print(f"DEBUG: asph_emb shape: {asph_emb.shape}") # Add this
         scalar_emb = self.scalar_encoder(inputs['scalar_features'])
-        print(f"DEBUG: scalar_emb shape: {scalar_emb.shape}") # Add this
+        #print(f"DEBUG: scalar_emb shape: {scalar_emb.shape}") # Add this
         decomposition_emb = self.decomposition_encoder(inputs['kspace_physics_features']['decomposition_features'])
-        print(f"DEBUG: decomposition_emb shape: {decomposition_emb.shape}") # Add this
+        #print(f"DEBUG: decomposition_emb shape: {decomposition_emb.shape}") # Add this
 
         combined_emb = torch.cat([crystal_emb, kspace_emb, asph_emb, scalar_emb, decomposition_emb], dim=-1)
-        print(f"DEBUG: combined_emb shape before fusion: {combined_emb.shape}") # Add this
+        #print(f"DEBUG: combined_emb shape before fusion: {combined_emb.shape}") # Add this
 
         fused_output = self.fusion_network(combined_emb)
 
