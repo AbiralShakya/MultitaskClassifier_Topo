@@ -168,7 +168,7 @@ class MaterialDataset(Dataset):
         crystal_graph = load_material_graph_from_dict(crystal_graph_dict)
         
         # --- 2. Load ASPH Features ---
-        asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / row['jid'] / "asph_features.npy"
+        asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / row['jid'] / "asph_features_rev2.npy"
         asph_features = torch.tensor(np.load(asph_features_path), dtype=torch.float)
 
 

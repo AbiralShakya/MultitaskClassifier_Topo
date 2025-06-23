@@ -83,7 +83,7 @@ CRYSTAL_NODE_FEATURE_DIM = 3 # Original value, if it's atomic number, could be 1
                            # Based on your previous code, it seems to be 3 (atomic number, period, group).
                            # Please confirm.
 
-ASPH_FEATURE_DIM = 63  # Confirmed from your previous config.
+ASPH_FEATURE_DIM = 3115 # Confirmed from your previous config.
 
 BAND_REP_FEATURE_DIM = 4756 # Confirmed from your previous config.
 
