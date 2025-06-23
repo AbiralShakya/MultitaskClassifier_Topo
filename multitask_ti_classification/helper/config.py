@@ -58,6 +58,7 @@ BATCH_SIZE = 32
 NUM_EPOCHS = 50
 DROPOUT_RATE = 0.2
 PATIENCE = 10 # For early stopping
+MAX_GRAD_NORM = 1.0 # NEW: Max norm for gradient clipping
 
 EGNN_HIDDEN_IRREPS_STR = "64x0e + 32x1o + 16x2e" # As defined in model.py's RealSpaceEGNNEncoder
 EGNN_RADIUS = 5.0 # Atomic interaction radius for EGNN
@@ -77,46 +78,24 @@ VAL_RATIO = 0.1
 TEST_RATIO = 0.1 
 
 # --- Feature Dimensions (YOU MUST SET THESE ACCURATELY) ---
-# Inspect your data to get these dimensions.
-# For example, if CRYSTAL_NODE_FEATURE_DIM is the output of your featurizer for atomic properties.
-CRYSTAL_NODE_FEATURE_DIM = 3 # Original value, if it's atomic number, could be 1. If it's one-hot, much larger.
-                           # Based on your previous code, it seems to be 3 (atomic number, period, group).
-                           # Please confirm.
-
-ASPH_FEATURE_DIM = 3115 # Confirmed from your previous config.
-
-BAND_REP_FEATURE_DIM = 4756 # Confirmed from your previous config.
-
-KSPACE_GRAPH_NODE_FEATURE_DIM = 10 # Original value. This is the `x.shape[1]` for kspace_graph.pt
-                                  # You need to confirm this from your kspace_graph.pt files.
-                                  # This might be (3 for k-coords) + (size of irrep embedding/one-hot) etc.
+CRYSTAL_NODE_FEATURE_DIM = 3 
+ASPH_FEATURE_DIM = 3115 
+BAND_REP_FEATURE_DIM = 4756 
+KSPACE_GRAPH_NODE_FEATURE_DIM = 10 
 
 # --- K-space Decomposition Features ---
 BASE_DECOMPOSITION_FEATURE_DIM = 2
 
-# ALL_POSSIBLE_IRREPS = sorted([
-#     "R1", "T1", "U1", "V1", "X1", "Y1", "Z1", "Γ1", "GP1",
-#     "R2R2", "T2T2", "U2U2", "V2V2", "X2X2", "Y2Y2", "Z2Z2", "Γ2Γ2", "2GP2",
-# ])
-
 with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
     ALL_POSSIBLE_IRREPS = pickle.load(fp)
 
-# MAX_DECOMPOSITION_INDICES_LEN: Maximum expected length of the 'decomposition_indices' list
-# in any 'SG_xxx/metadata.json'.
 MAX_DECOMPOSITION_INDICES_LEN = 100
 
-# DECOMPOSITION_FEATURE_DIM: Total dimension of the combined decomposition features.
-# This value is calculated based on the above three and *must* match the input_dim
-# of your DecompositionFeatureEncoder. It will be explicitly set in MaterialDataset.__init__.
 DECOMPOSITION_FEATURE_DIM = BASE_DECOMPOSITION_FEATURE_DIM + \
                             len(ALL_POSSIBLE_IRREPS) + \
                             MAX_DECOMPOSITION_INDICES_LEN
 
-# SCALAR_TOTAL_DIM: Total dimension of combined scalar features (band_rep_features + metadata_features)
-# This will be BAND_REP_FEATURE_DIM + the number of columns in `scalar_features_columns`
-# defined in your MaterialDataset.
-SCALAR_TOTAL_DIM = BAND_REP_FEATURE_DIM + len([ # These are the columns in your MaterialDataset's scalar_features_columns
+SCALAR_TOTAL_DIM = BAND_REP_FEATURE_DIM + len([ 
     'band_gap', 'formation_energy', 'density', 'volume', 'nsites',
     'space_group_number', 'total_magnetization', 'energy_above_hull'
 ])
