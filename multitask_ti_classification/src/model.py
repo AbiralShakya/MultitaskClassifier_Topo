@@ -70,7 +70,7 @@ class EGNNLayer(nn.Module):
             print(f"Warning: Gate initialization failed: {e}")
             print(f"TP output irreps: {tp_out_irreps}")
             print(f"Scalars: {irreps_scalars}, Gates: {irreps_gates}, Gated: {irreps_gated}")
-            # Fallback: use a simple linear layer
+            # # Fallback: use a simple linear layer
             self.gate_messages = Linear(tp_out_irreps, hidden_irreps)
             self.linear_messages_out = nn.Identity()
 
@@ -133,9 +133,9 @@ class EGNNLayer(nn.Module):
         # edge_attr_tensor should be [num_edges, 4] where first 3 are vector (1o) and last 1 is scalar (0e)
         
         # Debug: Print shapes for troubleshooting
-        print(f"node_features shape: {node_features.shape}")
-        print(f"edge_attr_tensor shape: {edge_attr_tensor.shape}")
-        print(f"node_features irreps: {node_features.irreps if hasattr(node_features, 'irreps') else 'No irreps'}")
+        # print(f"node_features shape: {node_features.shape}")
+        # print(f"edge_attr_tensor shape: {edge_attr_tensor.shape}")
+        # print(f"node_features irreps: {node_features.irreps if hasattr(node_features, 'irreps') else 'No irreps'}")
         
         # 1. Message passing
         try:
@@ -325,6 +325,7 @@ class RealSpaceEGNNEncoder(nn.Module):
                 final_embedding = self.final_linear_0e(graph_embedding_tensor)
         
         return final_embedding
+
 class KSpaceTransformerGNNEncoder(nn.Module):
     """
     Graph Transformer (TransformerConv) encoder for k-space topology graphs.
@@ -336,29 +337,40 @@ class KSpaceTransformerGNNEncoder(nn.Module):
         
         self.layers = nn.ModuleList()
         self.bns = nn.ModuleList()
+        current_in_channels = hidden_dim 
 
         for i in range(n_layers):
+            out_channels_per_head = hidden_dim 
+
             self.layers.append(TransformerConv(
-                in_channels=hidden_dim,
-                out_channels=hidden_dim,
+                in_channels=current_in_channels, 
+                out_channels=out_channels_per_head,
                 heads=num_heads,
                 dropout=config.DROPOUT_RATE,
                 beta=True
             ))
-            self.bns.append(nn.BatchNorm1d(hidden_dim))
+            self.bns.append(nn.BatchNorm1d(out_channels_per_head * num_heads))
             
+            current_in_channels = out_channels_per_head * num_heads
+
+        self.final_projection = nn.Linear(current_in_channels, out_channels)
+
+
     def forward(self, data: PyGData) -> torch.Tensor:
         x, edge_index, batch = data.x, data.edge_index, data.batch
         
         x = self.initial_projection(x)
         
         for i, layer in enumerate(self.layers):
-            x = layer(x, edge_index) 
+            x = layer(x, edge_index) # Output of TransformerConv is (N_nodes, out_channels_per_head * num_heads)
             x = self.bns[i](x)
             x = F.relu(x)
             x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)
 
-        return global_mean_pool(x, batch)
+        pooled_x = global_mean_pool(x, batch)
+        final_embedding = self.final_projection(pooled_x) # Apply final projection
+        
+        return final_embedding
 
 # --- 3. ASPH Encoder ---
 
