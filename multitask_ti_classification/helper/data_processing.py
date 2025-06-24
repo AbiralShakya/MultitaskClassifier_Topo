@@ -110,8 +110,8 @@ class StratifiedDataSplitter:
         magnetism_labels = []
         
         for data in dataset:
-            topology_labels.append(data['topology_targets'].item())
-            magnetism_labels.append(data['magnetism_targets'].item())
+            topology_labels.append(data['topology_label'].item())
+            magnetism_labels.append(data['magnetism_label'].item())
         
         # Create combined labels for stratification
         combined_labels = [f"{t}_{m}" for t, m in zip(topology_labels, magnetism_labels)]
