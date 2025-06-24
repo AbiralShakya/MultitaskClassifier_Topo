@@ -106,14 +106,16 @@ class MaterialDataset(Dataset):
         self.topology_class_map = config.TOPOLOGY_CLASS_MAPPING
         self.magnetism_class_map = config.MAGNETISM_CLASS_MAPPING
 
+        # Updated scalar features columns, now excluding 'band_gap' if it's extracted separately
         self.scalar_features_columns = [
-            'band_gap', 'formation_energy', 'density', 'volume', 'nsites',
-            'space_group_number', 'total_magnetization', 'energy_above_hull'
+            'formation_energy', 'energy_above_hull', 'density', 'volume', 'nsites',
+            'space_group_number', 'total_magnetization'
         ]
         
         self.all_possible_irreps = getattr(config, 'ALL_POSSIBLE_IRREPS', [])
         if not self.all_possible_irreps:
             warnings.warn("config.ALL_POSSIBLE_IRREPS is not set. Using a limited default. This may cause issues.")
+            # Default to some common irreps if the file is missing
             self.all_possible_irreps = sorted([
                 "R1", "T1", "U1", "V1", "X1", "Y1", "Z1", "Γ1", "GP1",
                 "R2R2", "T2T2", "U2U2", "V2V2", "X2X2", "Y2Y2", "Z2Z2", "Γ2Γ2", "2GP2"
@@ -133,12 +135,10 @@ class MaterialDataset(Dataset):
 
         # Ensure these are initialized only if they aren't already explicitly set in config
         # and if a sample is available to infer from.
-        # This will be handled during initial dataset inference in classifier_training.py
-        # but prevents warnings if set to 0.
         self._crystal_node_feature_dim = getattr(config, 'CRYSTAL_NODE_FEATURE_DIM', 0)
         self._kspace_graph_node_feature_dim = getattr(config, 'KSPACE_GRAPH_NODE_FEATURE_DIM', 0)
         self._asph_feature_dim = getattr(config, 'ASPH_FEATURE_DIM', 0)
-        self._scalar_total_dim = getattr(config, 'SCALAR_TOTAL_DIM', len(self.scalar_features_columns) + getattr(config, 'BAND_REP_FEATURE_DIM', 0))
+        self._scalar_total_dim = getattr(config, 'SCALAR_TOTAL_DIM', len(self.scalar_features_columns) + getattr(config, 'BAND_REP_FEATURE_DIM', 0)) # Excludes band_gap here.
         
     def __len__(self) -> int:
         return len(self.metadata_df)
@@ -165,7 +165,6 @@ class MaterialDataset(Dataset):
         # --- 2. Load ASPH Features ---
         asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / "asph_features_rev2.npy"
         try:
-            # Load as numpy array first as it might be padded
             asph_features_np = np.load(asph_features_path)
             asph_features = torch.tensor(asph_features_np, dtype=torch.float)
             asph_features = self._check_and_handle_nan_inf(asph_features, f"asph_features", jid)
@@ -178,24 +177,33 @@ class MaterialDataset(Dataset):
         sg_number = row['space_group_number'] 
         kspace_sg_folder = self.kspace_graphs_base_dir / f"SG_{str(int(sg_number)).zfill(3)}"
 
-        base_physics_features_path = kspace_sg_folder / 'physics_features.pt'
-
         # Load kspace_graph.pt
         kspace_graph_path = kspace_sg_folder / 'kspace_graph.pt'
         kspace_graph = None
         try:
+            # Assuming kspace_graph.pt might contain pos and symmetry_labels
             kspace_graph = torch.load(kspace_graph_path)
             kspace_graph.x = self._check_and_handle_nan_inf(kspace_graph.x, f"kspace_graph.x", jid)
+            if hasattr(kspace_graph, 'pos') and kspace_graph.pos is not None:
+                kspace_graph.pos = self._check_and_handle_nan_inf(kspace_graph.pos, f"kspace_graph.pos", jid)
             if hasattr(kspace_graph, 'edge_attr') and kspace_graph.edge_attr is not None:
                  kspace_graph.edge_attr = self._check_and_handle_nan_inf(kspace_graph.edge_attr, f"kspace_graph.edge_attr", jid)
             if hasattr(kspace_graph, 'u') and kspace_graph.u is not None: # global features
                  kspace_graph.u = self._check_and_handle_nan_inf(kspace_graph.u, f"kspace_graph.u", jid)
+            # Add symmetry_labels if present in the kspace_graph object itself or another source
+            # For now, assuming symmetry_labels might be an attribute of PyGData if provided by your graph builder
+            if not hasattr(kspace_graph, 'symmetry_labels'):
+                kspace_graph.symmetry_labels = None # Explicitly set to None if not loaded
 
         except Exception as e:
             warnings.warn(f"Could not load k-space graph for SG {sg_number} (JID: {jid}) from {kspace_graph_path}: {e}. Returning dummy graph.")
             kspace_graph = self._generate_dummy_kspace_graph()
+            kspace_graph.pos = torch.zeros((kspace_graph.num_nodes if hasattr(kspace_graph, 'num_nodes') else 5), 3, dtype=torch.float) # Ensure dummy has pos
+            kspace_graph.symmetry_labels = None
 
-        # Load base physics_features.pt
+
+        # Load base physics_features.pt (decomposition features)
+        base_physics_features_path = kspace_sg_folder / 'physics_features.pt'
         base_decomposition_features_tensor = None
         try:
             loaded_data = torch.load(base_physics_features_path)
@@ -205,7 +213,7 @@ class MaterialDataset(Dataset):
                 base_decomposition_features_tensor = loaded_data
             else:
                 warnings.warn(f"Unexpected data type in {base_physics_features_path} for JID {jid}. Expected dict or tensor.")
-                base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32) # Default to 2
+                base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32)
 
             base_decomposition_features_tensor = self._check_and_handle_nan_inf(base_decomposition_features_tensor, f"base_decomposition_features", jid)
             
@@ -216,11 +224,11 @@ class MaterialDataset(Dataset):
             
             if base_decomposition_features_tensor.numel() != getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', base_decomposition_features_tensor.numel()):
                 warnings.warn(f"Loaded base decomposition features for {jid} (SG {sg_number}) have wrong dim {base_decomposition_features_tensor.numel()}, expected {getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 0)}. Using dummy.")
-                base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32) # Default to 2
+                base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32)
 
         except Exception as e:
             warnings.warn(f"Could not load base physics features for SG {sg_number} (JID: {jid}) from {base_physics_features_path}: {e}. Returning zeros.")
-            base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32) # Default to 2
+            base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32)
 
 
         # Load SG-specific metadata.json for EBR and Decomposition Branches
@@ -252,35 +260,60 @@ class MaterialDataset(Dataset):
         sg_decomposition_indices_tensor = self._check_and_handle_nan_inf(sg_decomposition_indices_tensor, f"sg_decomposition_indices_tensor", jid)
 
 
-        # Combine all decomposition-related features
-        full_decomposition_features = torch.cat([
+        # Combine all decomposition-related features for the `decomposition_features` input
+        full_decomposition_features_tensor = torch.cat([
             base_decomposition_features_tensor,
             ebr_features_vec,
             sg_decomposition_indices_tensor
         ])
         
-        if full_decomposition_features.numel() != self._expected_decomposition_feature_dim:
-            warnings.warn(f"Final decomposition feature dim mismatch for {jid} (SG {sg_number}). Expected {self._expected_decomposition_feature_dim}, got {full_decomposition_features.numel()}. Adjusting.")
-            if full_decomposition_features.numel() < self._expected_decomposition_feature_dim:
-                padding = torch.zeros(self._expected_decomposition_feature_dim - full_decomposition_features.numel(), dtype=torch.float32)
-                full_decomposition_features = torch.cat([full_decomposition_features, padding])
+        if full_decomposition_features_tensor.numel() != self._expected_decomposition_feature_dim:
+            warnings.warn(f"Final decomposition feature dim mismatch for {jid} (SG {sg_number}). Expected {self._expected_decomposition_feature_dim}, got {full_decomposition_features_tensor.numel()}. Adjusting.")
+            if full_decomposition_features_tensor.numel() < self._expected_decomposition_feature_dim:
+                padding = torch.zeros(self._expected_decomposition_feature_dim - full_decomposition_features_tensor.numel(), dtype=torch.float32)
+                full_decomposition_features_tensor = torch.cat([full_decomposition_features_tensor, padding])
             else:
-                full_decomposition_features = full_decomposition_features[:self._expected_decomposition_feature_dim]
-        full_decomposition_features = self._check_and_handle_nan_inf(full_decomposition_features, f"full_decomposition_features", jid)
+                full_decomposition_features_tensor = full_decomposition_features_tensor[:self._expected_decomposition_feature_dim]
+        full_decomposition_features_tensor = self._check_and_handle_nan_inf(full_decomposition_features_tensor, f"full_decomposition_features", jid)
 
 
-        # Consolidated kspace_physics_features dictionary for the model
-        kspace_physics_features_dict = {'decomposition_features': full_decomposition_features}
+        # --- NEW: Extract specific gap, DOS, Fermi features ---
+        # gap_features (Band Gap)
+        band_gap_val = row['band_gap']
+        gap_features_tensor = torch.tensor([0.0 if pd.isna(band_gap_val) else band_gap_val], dtype=torch.float)
+        gap_features_tensor = self._check_and_handle_nan_inf(gap_features_tensor, "band_gap", jid)
+        # Ensure it has the correct dimension as defined in config
+        if gap_features_tensor.numel() != config.BAND_GAP_SCALAR_DIM:
+            warnings.warn(f"Band gap tensor for {jid} has dim {gap_features_tensor.numel()}, expected {config.BAND_GAP_SCALAR_DIM}. Adjusting.")
+            gap_features_tensor = torch.zeros(config.BAND_GAP_SCALAR_DIM, dtype=torch.float)
+
+        # DOS Features (placeholder if not directly loaded)
+        # You would replace this with actual loading if you have DOS data files
+        dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Placeholder
+        dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
+
+        # Fermi Surface Features (placeholder if not directly loaded)
+        # You would replace this with actual loading if you have Fermi surface data
+        fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Placeholder
+        fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
+
+        # Consolidate kspace_physics_features dictionary for the model
+        kspace_physics_features_dict = {
+            'decomposition_features': full_decomposition_features_tensor,
+            'gap_features': gap_features_tensor,
+            'dos_features': dos_features_tensor,
+            'fermi_features': fermi_features_tensor
+        }
 
 
-        # --- 4. Extract Scalar Features (Band Reps + Metadata) ---
+        # --- 4. Extract Scalar Features (Band Reps + Metadata, NOW EXCLUDING BAND GAP) ---
         band_rep_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / 'band_rep_features.npy'
         try:
             band_rep_features = torch.tensor(np.load(band_rep_features_path), dtype=torch.float)
             band_rep_features = self._check_and_handle_nan_inf(band_rep_features, f"band_rep_features", jid)
         except Exception as e:
             warnings.warn(f"Could not load Band Rep features for JID {jid} from {band_rep_features_path}: {e}. Returning zeros.")
-            band_rep_features = torch.zeros(getattr(config, 'BAND_REP_FEATURE_DIM', 4756), dtype=torch.float) # Default to 4756
+            band_rep_features = torch.zeros(getattr(config, 'BAND_REP_FEATURE_DIM', 4756), dtype=torch.float)
 
 
         scalar_metadata_features = [row[col] for col in self.scalar_features_columns]
@@ -293,10 +326,8 @@ class MaterialDataset(Dataset):
         combined_scalar_features = self._check_and_handle_nan_inf(combined_scalar_features, f"combined_scalar_features_before_scaler", jid)
         
         # Apply scaling to combined_scalar_features.
-        # This is the feature set that StandardScaler will be fitted on.
         if self.scaler:
             if combined_scalar_features.ndim == 1:
-                # StandardScaler expects 2D input (n_samples, n_features)
                 combined_scalar_features_np = combined_scalar_features.unsqueeze(0).cpu().numpy()
                 scaled_features_np = self.scaler.transform(combined_scalar_features_np)
                 combined_scalar_features = torch.tensor(scaled_features_np.squeeze(0), dtype=torch.float)
@@ -304,14 +335,6 @@ class MaterialDataset(Dataset):
                 scaled_features_np = self.scaler.transform(combined_scalar_features.cpu().numpy())
                 combined_scalar_features = torch.tensor(scaled_features_np, dtype=torch.float)
             combined_scalar_features = self._check_and_handle_nan_inf(combined_scalar_features, f"combined_scalar_features_after_scaler", jid)
-
-        # --- NEW: Potentially scale ASPH features as well ---
-        # If ASPH features contain padding and are large, scaling them is critical.
-        # This requires a separate scaler fitted ONLY on ASPH features from the training set.
-        # For now, let's assume `self.scaler` is passed as a dict of scalers.
-        # If `self.scaler` is a single StandardScaler, this won't work directly.
-        # A simple normalization for ASPH features might be needed here if not scaled by StandardScaler.
-        # For now, relying on the preprocessing layer in the model for initial handling.
 
         # --- 5. Prepare Labels ---
         topology_label_str = row['topological_class']
@@ -321,7 +344,6 @@ class MaterialDataset(Dataset):
         magnetism_label = torch.tensor(self.magnetism_class_map.get(magnetism_label_str, self.magnetism_class_map["UNKNOWN"]), dtype=torch.long)
 
         # --- Set Feature Dimensions in Config for Model Initialization (if not already set) ---
-        # Only update if the config value is 0 or None, indicating it wasn't pre-set
         if config.CRYSTAL_NODE_FEATURE_DIM is None or config.CRYSTAL_NODE_FEATURE_DIM == 0:
             config.CRYSTAL_NODE_FEATURE_DIM = crystal_graph.x.shape[1]
         if config.KSPACE_GRAPH_NODE_FEATURE_DIM is None or config.KSPACE_GRAPH_NODE_FEATURE_DIM == 0:
@@ -331,13 +353,12 @@ class MaterialDataset(Dataset):
         if config.SCALAR_TOTAL_DIM is None or config.SCALAR_TOTAL_DIM == 0:
             config.SCALAR_TOTAL_DIM = combined_scalar_features.shape[0]
 
-
         return {
             'crystal_graph': crystal_graph,
-            'kspace_graph': kspace_graph,
+            'kspace_graph': kspace_graph, # Now includes .pos and .symmetry_labels (if available)
             'asph_features': asph_features,
-            'scalar_features': combined_scalar_features,
-            'kspace_physics_features': kspace_physics_features_dict,
+            'scalar_features': combined_scalar_features, # Excludes band_gap
+            'kspace_physics_features': kspace_physics_features_dict, # Now includes decomp, gap, dos, fermi
             'topology_label': topology_label,
             'magnetism_label': magnetism_label,
             'jid': jid 
@@ -359,7 +380,9 @@ class MaterialDataset(Dataset):
         x_dummy = torch.randn(num_nodes_dummy, kspace_node_feature_dim)
         edge_index_dummy = torch.randint(0, num_nodes_dummy, (2, 8))
         batch_dummy = torch.zeros(num_nodes_dummy, dtype=torch.long)
-        return PyGData(x=x_dummy, edge_index=edge_index_dummy, batch=batch_dummy)
+        pos_dummy = torch.randn(num_nodes_dummy, 3) # Add pos to dummy
+        symmetry_labels_dummy = torch.randint(0, 10, (num_nodes_dummy,), dtype=torch.long) # Add dummy symmetry labels
+        return PyGData(x=x_dummy, edge_index=edge_index_dummy, batch=batch_dummy, pos=pos_dummy, symmetry_labels=symmetry_labels_dummy)
 
     def _generate_dummy_asph_features(self):
         asph_feature_dim = getattr(config, 'ASPH_FEATURE_DIM', 3115) 
@@ -369,8 +392,7 @@ class MaterialDataset(Dataset):
         base_decomposition_feature_dim = getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2) 
         return torch.zeros(base_decomposition_feature_dim)
 
-
-# Custom collate function for PyGDataLoader to handle dictionary of Data objects and other tensors
+# Custom collate function remains the same, as it stacks the dicts as before.
 def custom_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Custom collate function for PyGDataLoader to handle a dictionary of inputs.

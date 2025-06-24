@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 import torch
 import pickle
+import warnings
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -44,7 +45,7 @@ LATENT_DIM_GNN = 128      # Output dimension of each GNN encoder
 
 # Specific latent dims for different FFNN types
 LATENT_DIM_ASPH = 3115    # Full dimension for ASPH as requested
-LATENT_DIM_OTHER_FFNN = 64 # Smaller dimension for other FFNNs (Scalar, Decomposition)
+LATENT_DIM_OTHER_FFNN = 64 # Smaller dimension for other FFNNs (Scalar, Decomposition, Enhanced Physics output)
 
 FUSION_HIDDEN_DIMS = [256, 128] # Dimensions for shared fusion layers
 
@@ -53,7 +54,6 @@ GNN_NUM_LAYERS = 3
 GNN_HIDDEN_CHANNELS = 128 # For node features within GNN layers
 
 # FFNN specific (ASPH and Scalar features)
-# These now refer to the _input_ dimensions to the FFNNs, or internal hidden dims
 FFNN_HIDDEN_DIMS_ASPH = [256, 128]
 FFNN_HIDDEN_DIMS_SCALAR = [128, 64]
 
@@ -63,7 +63,7 @@ BATCH_SIZE = 32
 NUM_EPOCHS = 50
 DROPOUT_RATE = 0.2
 PATIENCE = 10 # For early stopping
-MAX_GRAD_NORM = 1.0 # NEW: Max norm for gradient clipping
+MAX_GRAD_NORM = 1.0 # Max norm for gradient clipping
 
 EGNN_HIDDEN_IRREPS_STR = "64x0e + 32x1o + 16x2e" # As defined in model.py's RealSpaceEGNNEncoder
 EGNN_RADIUS = 5.0 # Atomic interaction radius for EGNN
@@ -80,29 +80,39 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-TEST_RATIO = 0.1
+TEST_RATIO = 0.1 
 
 # --- Feature Dimensions (YOU MUST SET THESE ACCURATELY) ---
 CRYSTAL_NODE_FEATURE_DIM = 3 
-ASPH_FEATURE_DIM = 3115
+ASPH_FEATURE_DIM = 3115 
 BAND_REP_FEATURE_DIM = 4756 
 KSPACE_GRAPH_NODE_FEATURE_DIM = 10 
 
-# --- K-space Decomposition Features ---
-BASE_DECOMPOSITION_FEATURE_DIM = 2
-
-with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
-    ALL_POSSIBLE_IRREPS = pickle.load(fp)
-
+# --- K-space Decomposition Features (input to EnhancedKSpacePhysicsFeatures) ---
+BASE_DECOMPOSITION_FEATURE_DIM = 2 # From your existing code
+ALL_POSSIBLE_IRREPS = [] # Will be loaded from file
 MAX_DECOMPOSITION_INDICES_LEN = 100
+
+try:
+    with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
+        ALL_POSSIBLE_IRREPS = pickle.load(fp)
+except FileNotFoundError:
+    warnings.warn("irrep_unique file not found. ALL_POSSIBLE_IRREPS will be empty. Decomposition features might be impacted.")
 
 DECOMPOSITION_FEATURE_DIM = BASE_DECOMPOSITION_FEATURE_DIM + \
                             len(ALL_POSSIBLE_IRREPS) + \
                             MAX_DECOMPOSITION_INDICES_LEN
 
-SCALAR_TOTAL_DIM = BAND_REP_FEATURE_DIM + len([ 
-    'band_gap', 'formation_energy', 'density', 'volume', 'nsites',
-    'space_group_number', 'total_magnetization', 'energy_above_hull'
+# New feature dimensions for EnhancedKSpacePhysicsFeatures
+BAND_GAP_SCALAR_DIM = 1 # Single scalar band gap value
+DOS_FEATURE_DIM = 100   # Assuming a 100-point DOS vector if available
+FERMI_FEATURE_DIM = 50  # Assuming 50 descriptors for Fermi surface if available
+
+# Scalar Total Dim (now excludes band_gap as it's separate)
+# It only contains band_rep_features + other scalar metadata features
+SCALAR_TOTAL_DIM = BAND_REP_FEATURE_DIM + len([
+    'formation_energy', 'energy_above_hull', 'density', 'volume', 'nsites',
+    'space_group_number', 'total_magnetization'
 ])
 
 # --- Model Saving ---
