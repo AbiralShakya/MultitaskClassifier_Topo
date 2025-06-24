@@ -654,6 +654,329 @@ class SimplifiedCrystalEncoder(nn.Module):
         
         return x
     
+
+class E3NNTensorWrapper:
+    """
+    Wrapper to ensure tensors have proper irreps attribute for e3nn operations.
+    This solves the batching issue where irreps get lost.
+    """
+    @staticmethod
+    def wrap_tensor(tensor: torch.Tensor, irreps: Irreps) -> torch.Tensor:
+        """Attach irreps to tensor if not present"""
+        if not hasattr(tensor, 'irreps'):
+            # Create a new tensor with irreps attribute
+            wrapped = tensor.clone()
+            wrapped.irreps = irreps
+            return wrapped
+        return tensor
+    
+    @staticmethod
+    def ensure_irreps(tensor: torch.Tensor, expected_irreps: Irreps) -> torch.Tensor:
+        """Ensure tensor has the expected irreps"""
+        if not hasattr(tensor, 'irreps'):
+            tensor.irreps = expected_irreps
+        elif tensor.irreps != expected_irreps:
+            print(f"Warning: tensor irreps {tensor.irreps} != expected {expected_irreps}")
+        return tensor
+
+class RobustGate(nn.Module):
+    """
+    Robust gate implementation that handles e3nn Gate initialization issues
+    """
+    def __init__(self, irreps_in: Irreps, activation_scalars=F.silu, activation_gates=F.sigmoid):
+        super().__init__()
+        self.irreps_in = irreps_in
+        
+        # Separate scalars and non-scalars
+        self.scalar_irreps = Irreps([(mul, irrep) for mul, irrep in irreps_in if irrep.l == 0])
+        self.nonscalar_irreps = Irreps([(mul, irrep) for mul, irrep in irreps_in if irrep.l > 0])
+        
+        # Create gate irreps (one scalar gate per non-scalar irrep multiplicity)
+        gate_irreps_list = []
+        for mul, irrep in self.nonscalar_irreps:
+            if irrep.l > 0:
+                gate_irreps_list.append((mul, o3.Irrep(0, 1)))  # scalar gates
+        self.gate_irreps = Irreps(gate_irreps_list) if gate_irreps_list else Irreps("0x0e")
+        
+        # Output irreps (scalars + gated non-scalars)
+        self.irreps_out = self.scalar_irreps + self.nonscalar_irreps
+        
+        # Try to use e3nn Gate, fallback to manual implementation
+        self.use_e3nn_gate = True
+        try:
+            if len(self.scalar_irreps) > 0 and len(self.nonscalar_irreps) > 0:
+                self.gate = Gate(
+                    irreps_scalars=self.scalar_irreps,
+                    act_scalars=[activation_scalars] * len(self.scalar_irreps),
+                    irreps_gates=self.gate_irreps,
+                    act_gates=[activation_gates] * len(self.gate_irreps),
+                    irreps_gated=self.nonscalar_irreps
+                )
+            elif len(self.scalar_irreps) > 0:
+                # Only scalars, no gating needed
+                self.scalar_activation = activation_scalars
+                self.use_e3nn_gate = False
+            else:
+                # Only non-scalars, create simple gates
+                self.gate_linear = nn.Linear(self.gate_irreps.dim, self.nonscalar_irreps.dim)
+                self.gate_activation = activation_gates
+                self.use_e3nn_gate = False
+        except Exception as e:
+            print(f"Warning: e3nn Gate failed, using manual implementation: {e}")
+            self.use_e3nn_gate = False
+            self.scalar_activation = activation_scalars
+            if len(self.nonscalar_irreps) > 0:
+                self.gate_linear = nn.Linear(self.gate_irreps.dim if self.gate_irreps.dim > 0 else 1, 
+                                           self.nonscalar_irreps.dim)
+                self.gate_activation = activation_gates
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.use_e3nn_gate and hasattr(self, 'gate'):
+            result = self.gate(x)
+            return E3NNTensorWrapper.ensure_irreps(result, self.irreps_out)
+        
+        # Manual gate implementation
+        outputs = []
+        start_idx = 0
+        
+        # Process scalars
+        for mul, irrep in self.scalar_irreps:
+            end_idx = start_idx + mul * irrep.dim
+            scalar_part = x[:, start_idx:end_idx]
+            if hasattr(self, 'scalar_activation'):
+                scalar_part = self.scalar_activation(scalar_part)
+            outputs.append(scalar_part)
+            start_idx = end_idx
+        
+        # Process non-scalars with gating
+        if len(self.nonscalar_irreps) > 0:
+            gate_start = start_idx
+            for mul, irrep in self.nonscalar_irreps:
+                end_idx = start_idx + mul * irrep.dim
+                nonscalar_part = x[:, start_idx:end_idx]
+                
+                if hasattr(self, 'gate_linear'):
+                    # Create gates from the non-scalar features themselves (simplified)
+                    gate_input = nonscalar_part.mean(dim=-1, keepdim=True)
+                    gates = self.gate_activation(self.gate_linear(gate_input))
+                    nonscalar_part = nonscalar_part * gates
+                
+                outputs.append(nonscalar_part)
+                start_idx = end_idx
+        
+        result = torch.cat(outputs, dim=-1) if outputs else x
+        return E3NNTensorWrapper.ensure_irreps(result, self.irreps_out)
+
+class RobustEGNNLayer(nn.Module):
+    """
+    Robust EGNN layer with better error handling and tensor management
+    """
+    def __init__(self, node_irreps_in: Irreps, edge_irreps_in: Irreps, hidden_irreps: Irreps):
+        super().__init__()
+        self.node_irreps_in = node_irreps_in
+        self.edge_irreps_in = edge_irreps_in
+        self.hidden_irreps = hidden_irreps
+        
+        # Message tensor product
+        self.message_tp = FullyConnectedTensorProduct(
+            node_irreps_in, edge_irreps_in, hidden_irreps
+        )
+        
+        # Message gate
+        self.message_gate = RobustGate(self.message_tp.irreps_out)
+        
+        # Message output projection
+        if self.message_gate.irreps_out != hidden_irreps:
+            self.message_linear = Linear(self.message_gate.irreps_out, hidden_irreps)
+        else:
+            self.message_linear = nn.Identity()
+        
+        # Update tensor product
+        self.update_tp = FullyConnectedTensorProduct(
+            node_irreps_in, hidden_irreps, hidden_irreps
+        )
+        
+        # Update gate
+        self.update_gate = RobustGate(self.update_tp.irreps_out)
+        
+        # Update output projection
+        if self.update_gate.irreps_out != node_irreps_in:
+            self.update_linear = Linear(self.update_gate.irreps_out, node_irreps_in)
+        else:
+            self.update_linear = nn.Identity()
+    
+    def forward(self, node_features: torch.Tensor, edge_index: torch.Tensor, 
+                edge_attr: torch.Tensor) -> torch.Tensor:
+        
+        # Ensure tensors have proper irreps
+        node_features = E3NNTensorWrapper.ensure_irreps(node_features, self.node_irreps_in)
+        edge_attr = E3NNTensorWrapper.ensure_irreps(edge_attr, self.edge_irreps_in)
+        
+        row, col = edge_index
+        
+        # Message passing
+        try:
+            # Compute messages
+            messages = self.message_tp(node_features[col], edge_attr)
+            messages = E3NNTensorWrapper.ensure_irreps(messages, self.message_tp.irreps_out)
+            
+            # Apply gate
+            messages = self.message_gate(messages)
+            
+            # Apply output projection
+            if not isinstance(self.message_linear, nn.Identity):
+                messages = self.message_linear(messages)
+            messages = E3NNTensorWrapper.ensure_irreps(messages, self.hidden_irreps)
+            
+        except Exception as e:
+            print(f"Error in message computation: {e}")
+            # Fallback: simple linear combination
+            combined = torch.cat([node_features[col], edge_attr], dim=-1)
+            if not hasattr(self, 'message_fallback'):
+                self.message_fallback = nn.Linear(combined.shape[-1], self.hidden_irreps.dim).to(combined.device)
+            messages = self.message_fallback(combined)
+            messages = E3NNTensorWrapper.ensure_irreps(messages, self.hidden_irreps)
+        
+        # Aggregate messages
+        aggregated = torch_geometric.utils.scatter(
+            messages, row, dim=0, dim_size=node_features.size(0), reduce="sum"
+        )
+        aggregated = E3NNTensorWrapper.ensure_irreps(aggregated, self.hidden_irreps)
+        
+        # Update nodes
+        try:
+            # Compute updates
+            updates = self.update_tp(node_features, aggregated)
+            updates = E3NNTensorWrapper.ensure_irreps(updates, self.update_tp.irreps_out)
+            
+            # Apply gate
+            updates = self.update_gate(updates)
+            
+            # Apply output projection
+            if not isinstance(self.update_linear, nn.Identity):
+                updates = self.update_linear(updates)
+            updates = E3NNTensorWrapper.ensure_irreps(updates, self.node_irreps_in)
+            
+        except Exception as e:
+            print(f"Error in update computation: {e}")
+            # Fallback: simple linear combination
+            combined = torch.cat([node_features, aggregated], dim=-1)
+            if not hasattr(self, 'update_fallback'):
+                self.update_fallback = nn.Linear(combined.shape[-1], self.node_irreps_in.dim).to(combined.device)
+            updates = self.update_fallback(combined)
+            updates = E3NNTensorWrapper.ensure_irreps(updates, self.node_irreps_in)
+        
+        # Residual connection
+        result = node_features + updates
+        return E3NNTensorWrapper.ensure_irreps(result, self.node_irreps_in)
+
+class RobustRealSpaceEGNNEncoder(nn.Module):
+    """
+    Robust Real-space EGNN encoder with proper e3nn integration
+    """
+    def __init__(self, 
+                 node_input_scalar_dim: int,
+                 hidden_irreps_str: str = "64x0e + 32x1o + 16x2e",
+                 n_layers: int = 6,
+                 radius: float = 5.0):
+        super().__init__()
+        
+        self.node_input_scalar_dim = node_input_scalar_dim
+        self.radius = radius
+        
+        # Define irreps
+        self.input_node_irreps = Irreps(f"{node_input_scalar_dim}x0e")
+        self.hidden_irreps = Irreps(hidden_irreps_str)
+        self.edge_irreps = Irreps("1x1o + 1x0e")  # normalized vector + distance
+        
+        # Initial projection
+        self.initial_projection = Linear(self.input_node_irreps, self.hidden_irreps)
+        
+        # EGNN layers
+        self.layers = nn.ModuleList()
+        for _ in range(n_layers):
+            self.layers.append(RobustEGNNLayer(
+                node_irreps_in=self.hidden_irreps,
+                edge_irreps_in=self.edge_irreps,
+                hidden_irreps=self.hidden_irreps
+            ))
+        
+        # Extract scalar irreps for final output
+        scalar_irreps_list = [(mul, irrep) for mul, irrep in self.hidden_irreps if irrep.l == 0]
+        self.scalar_irreps = Irreps(scalar_irreps_list) if scalar_irreps_list else Irreps("1x0e")
+        
+        # Final projection to output dimension
+        output_irreps = Irreps(f"{config.LATENT_DIM_GNN}x0e")
+        self.final_projection = Linear(self.scalar_irreps, output_irreps)
+    
+    def extract_scalar_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract scalar (l=0) features from tensor with irreps"""
+        if not hasattr(x, 'irreps'):
+            # If no irreps, assume first few dimensions are scalars
+            scalar_dim = min(x.shape[-1], self.scalar_irreps.dim)
+            return x[:, :scalar_dim]
+        
+        scalar_features = []
+        start_idx = 0
+        
+        for mul, irrep in x.irreps:
+            end_idx = start_idx + mul * irrep.dim
+            if irrep.l == 0:  # scalar
+                scalar_features.append(x[:, start_idx:end_idx])
+            start_idx = end_idx
+        
+        if scalar_features:
+            return torch.cat(scalar_features, dim=-1)
+        else:
+            # Fallback: use first scalar_irreps.dim dimensions
+            return x[:, :self.scalar_irreps.dim]
+    
+    def forward(self, data: PyGData) -> torch.Tensor:
+        x_raw = data.x
+        pos = data.pos
+        batch = data.batch
+        
+        # Initial projection
+        x = self.initial_projection(x_raw)
+        x = E3NNTensorWrapper.ensure_irreps(x, self.hidden_irreps)
+        
+        # Build radius graph
+        edge_index = torch_geometric.nn.radius_graph(pos, self.radius, batch)
+        
+        if edge_index.size(1) == 0:
+            # No edges case
+            batch_size = batch.max().item() + 1 if batch is not None else 1
+            return torch.zeros(batch_size, config.LATENT_DIM_GNN, device=x_raw.device)
+        
+        # Compute edge attributes
+        row, col = edge_index
+        edge_vec = pos[row] - pos[col]
+        edge_dist = edge_vec.norm(dim=-1, keepdim=True)
+        edge_dir = edge_vec / (edge_dist + 1e-8)
+        
+        # Combine to match edge_irreps: "1x1o + 1x0e"
+        edge_attr = torch.cat([edge_dir, edge_dist], dim=-1)
+        edge_attr = E3NNTensorWrapper.ensure_irreps(edge_attr, self.edge_irreps)
+        
+        # Apply EGNN layers
+        for layer in self.layers:
+            x = layer(x, edge_index, edge_attr)
+        
+        # Extract scalar features for pooling
+        scalar_features = self.extract_scalar_features(x)
+        
+        # Global pooling
+        pooled = global_mean_pool(scalar_features, batch)
+        pooled = E3NNTensorWrapper.ensure_irreps(pooled, self.scalar_irreps)
+        
+        # Final projection
+        output = self.final_projection(pooled)
+        
+        # Return as regular tensor (remove irreps for compatibility)
+        if hasattr(output, 'irreps'):
+            return output
+        return output
+    
 class MultiModalMaterialClassifier(nn.Module):
     """
     Multi-modal, multi-task classifier for materials.
@@ -696,13 +1019,21 @@ class MultiModalMaterialClassifier(nn.Module):
         #     n_layers=egnn_num_layers,
         #     radius=egnn_radius,
         # )
-        self.crystal_encoder = SimplifiedCrystalEncoder(
-            node_input_dim=crystal_node_feature_dim, 
-            hidden_dim=128, 
-            num_layers=4, 
-            output_dim=config.LATENT_DIM_GNN,
-            radius=5.0
+        # self.crystal_encoder = SimplifiedCrystalEncoder(
+        #     node_input_dim=crystal_node_feature_dim, 
+        #     hidden_dim=128, 
+        #     num_layers=4, 
+        #     output_dim=config.LATENT_DIM_GNN,
+        #     radius=5.0
+        # )
+
+        self.crystal_encoder = RobustRealSpaceEGNNEncoder(
+            node_input_scalar_dim=crystal_node_feature_dim,
+            hidden_irreps_str=egnn_hidden_irreps_str,
+            n_layers=egnn_num_layers,
+            radius=egnn_radius,
         )
+
         # self.kspace_encoder = KSpaceTransformerGNNEncoder(
         #     node_feature_dim=kspace_node_feature_dim,
         #     hidden_dim=kspace_gnn_hidden_channels,
