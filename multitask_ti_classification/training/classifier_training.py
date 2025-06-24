@@ -8,17 +8,18 @@ import numpy as np
 import os
 import json
 from pathlib import Path
-from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+# from sklearn.preprocessing import StandardScaler # REMOVED: Replaced by ImprovedDataPreprocessor
+# from sklearn.model_selection import train_test_split # REMOVED: Replaced by StratifiedDataSplitter
 import warnings
 import random
 import torch_geometric
-from collections import Counter # Import Counter for class weight calculation
+from collections import Counter
 
 # Import from local modules
 from helper import config
 from helper.dataset import MaterialDataset, custom_collate_fn
-from src.model import MultiModalMaterialClassifier 
+from src.model import MultiModalMaterialClassifier
+from helper.data_processing import ImprovedDataPreprocessor, StratifiedDataSplitter # NEW IMPORT
 
 torch.serialization.add_safe_globals([
     torch_geometric.data.data.DataEdgeAttr,
@@ -58,15 +59,17 @@ def train_main_classifier():
     print("\nStarting multi-modal material classification training...")
     print("Setting up environment...")
     
-    full_dataset_for_dim_inference = MaterialDataset(
+    # Load the full dataset (without initial scaler, as preprocessor will handle it)
+    full_dataset_raw = MaterialDataset(
         master_index_path=config.MASTER_INDEX_PATH,
         kspace_graphs_base_dir=config.KSPACE_GRAPHS_DIR,
         data_root_dir=config.DATA_DIR,
-        scaler=None
+        scaler=None # No scaler at this stage
     )
     
     try:
-        _ = full_dataset_for_dim_inference[0] 
+        # Access a sample to infer dimensions and trigger any warnings in MaterialDataset init
+        _ = full_dataset_raw[0]
         print("Dataset dimensions inferred and config updated.")
     except Exception as e:
         print(f"Warning: Could not load first sample to infer dimensions: {e}")
@@ -74,124 +77,37 @@ def train_main_classifier():
 
     print("Environment setup complete.")
 
-    print("Fitting StandardScaler for scalar features on training data...")
-    dataset_indices = list(range(len(full_dataset_for_dim_inference)))
-    train_indices, temp_indices = train_test_split(
-        dataset_indices, 
-        train_size=config.TRAIN_RATIO, 
+    print("\nStarting data preprocessing with ImprovedDataPreprocessor...")
+    preprocessor = ImprovedDataPreprocessor()
+    
+    
+    all_raw_data_dicts = []
+    for i in range(len(full_dataset_raw)):
+        try:
+            all_raw_data_dicts.append(full_dataset_raw[i])
+        except Exception as e:
+            # Handle cases where MaterialDataset[i] might fail to load a specific material
+            warnings.warn(f"Skipping material at index {i} due to loading error: {e}")
+            continue
+
+    # Fit scalers and transform all data
+    processed_data_list = preprocessor.fit_transform(all_raw_data_dicts)
+    print("Data preprocessing complete.")
+    
+    print("\nCreating stratified data splits with StratifiedDataSplitter...")
+    splitter = StratifiedDataSplitter(
+        test_size=config.TEST_RATIO,
+        val_size=config.VAL_RATIO,
         random_state=config.SEED
     )
-    val_indices, test_indices = train_test_split(
-        temp_indices, 
-        train_size=config.VAL_RATIO / (config.VAL_RATIO + config.TEST_RATIO),
-        random_state=config.SEED
-    )
-
-    temp_train_dataset_for_scaler = torch.utils.data.Subset(full_dataset_for_dim_inference, train_indices)
     
-    scalar_features_list = []
-    train_topology_labels = [] # To collect labels for class weighting
-    train_magnetism_labels = [] # To collect labels for class weighting
+    train_data_list, val_data_list, test_data_list = splitter.split(processed_data_list)
+    print(f"Dataset split: Train={len(train_data_list)}, Val={len(val_data_list)}, Test={len(test_data_list)}")
 
-    temp_train_loader_for_scaler = DataLoader( # Using basic DataLoader for collecting labels
-        temp_train_dataset_for_scaler, 
-        batch_size=config.BATCH_SIZE,
-        shuffle=False,
-        collate_fn=custom_collate_fn, # Use custom collate_fn here too
-        num_workers=config.NUM_WORKERS
-    )
-
-    for batch in temp_train_loader_for_scaler:
-        scalar_features_list.append(batch['scalar_features'].cpu().numpy())
-        train_topology_labels.extend(batch['topology_label'].cpu().numpy())
-        train_magnetism_labels.extend(batch['magnetism_label'].cpu().numpy())
-    
-    scaler = None
-    if scalar_features_list:
-        all_train_scalar_features = np.vstack(scalar_features_list)
-        scaler = StandardScaler()
-        scaler.fit(all_train_scalar_features)
-        print("StandardScaler fitted on training data.")
-    else:
-        print("No scalar features collected for scaler fitting. Scaler will not be used.")
-
-    # --- Calculate Class Weights for Topology ---
-    topology_class_counts = Counter(train_topology_labels)
-    total_topology_samples = sum(topology_class_counts.values())
-    topology_num_classes = config.NUM_TOPOLOGY_CLASSES # Use config value for consistent size
-
-    # Initialize weights to 1.0 / count to handle zero counts better later
-    topology_class_weights_raw = torch.zeros(topology_num_classes, dtype=torch.float32)
-    
-    print("\n--- Topology Class Distribution (Training Set) ---")
-    for i in range(topology_num_classes):
-        class_name = None
-        for name, idx in config.TOPOLOGY_CLASS_MAPPING.items():
-            if idx == i:
-                class_name = name
-                break
-        count = topology_class_counts.get(i, 0)
-        print(f"Class {i} ('{class_name}'): {count} samples")
-        if count > 0:
-            # Using inverse frequency for weighting
-            topology_class_weights_raw[i] = total_topology_samples / (count * topology_num_classes)
-        else:
-            # Assign a very high weight if class is missing to heavily penalize missing it
-            # This is a strong signal but can be unstable. Adjust if needed.
-            # A more robust approach might be to ensure no classes are truly missing from training,
-            # or use a small epsilon for count.
-            topology_class_weights_raw[i] = 100.0 # Example: a high fixed weight for truly missing classes
-
-    # Normalize weights - optional, but can make initial loss values more interpretable
-    topology_class_weights = topology_class_weights_raw / topology_class_weights_raw.sum() * topology_num_classes # Normalize to sum to num_classes
-
-    print(f"Calculated Topology Class Weights: {topology_class_weights.tolist()}")
-    print("---------------------------------------------------\n")
-
-
-    # --- Calculate Class Weights for Magnetism ---
-    magnetism_class_counts = Counter(train_magnetism_labels)
-    total_magnetism_samples = sum(magnetism_class_counts.values())
-    magnetism_num_classes = config.NUM_MAGNETISM_CLASSES
-
-    magnetism_class_weights_raw = torch.zeros(magnetism_num_classes, dtype=torch.float32)
-
-    print("--- Magnetism Class Distribution (Training Set) ---")
-    for i in range(magnetism_num_classes):
-        class_name = None
-        for name, idx in config.MAGNETISM_CLASS_MAPPING.items():
-            if idx == i:
-                class_name = name
-                break
-        count = magnetism_class_counts.get(i, 0)
-        print(f"Class {i} ('{class_name}'): {count} samples")
-        if count > 0:
-            magnetism_class_weights_raw[i] = total_magnetism_samples / (count * magnetism_num_classes)
-        else:
-            magnetism_class_weights_raw[i] = 100.0 # High weight for missing classes
-    
-    magnetism_class_weights = magnetism_class_weights_raw / magnetism_class_weights_raw.sum() * magnetism_num_classes
-    
-    print(f"Calculated Magnetism Class Weights: {magnetism_class_weights.tolist()}")
-    print("---------------------------------------------------\n")
-
-    final_full_dataset = MaterialDataset(
-        master_index_path=config.MASTER_INDEX_PATH,
-        kspace_graphs_base_dir=config.KSPACE_GRAPHS_DIR,
-        data_root_dir=config.DATA_DIR,
-        scaler=scaler
-    )
-    print("Final dataset re-initialized with fitted scaler.")
-
-    train_dataset = torch.utils.data.Subset(final_full_dataset, train_indices)
-    val_dataset = torch.utils.data.Subset(final_full_dataset, val_indices)
-    test_dataset = torch.utils.data.Subset(final_full_dataset, test_indices)
-
-    print(f"Dataset split: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
-
-    train_loader = PyGDataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn, num_workers=config.NUM_WORKERS)
-    val_loader = PyGDataLoader(val_dataset, batch_size=config.BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn, num_workers=config.NUM_WORKERS)
-    test_loader = PyGDataLoader(test_dataset, batch_size=config.BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn, num_workers=config.NUM_WORKERS)
+    # Create PyGDataLoader from the lists of processed data dictionaries
+    train_loader = PyGDataLoader(train_data_list, batch_size=config.BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn, num_workers=config.NUM_WORKERS)
+    val_loader = PyGDataLoader(val_data_list, batch_size=config.BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn, num_workers=config.NUM_WORKERS)
+    test_loader = PyGDataLoader(test_data_list, batch_size=config.BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn, num_workers=config.NUM_WORKERS)
 
     model = MultiModalMaterialClassifier(
         crystal_node_feature_dim=config.CRYSTAL_NODE_FEATURE_DIM,
@@ -214,15 +130,64 @@ def train_main_classifier():
         ffnn_hidden_dims_scalar=config.FFNN_HIDDEN_DIMS_SCALAR,
         
         latent_dim_gnn=config.LATENT_DIM_GNN,
-        latent_dim_asph=config.LATENT_DIM_ASPH, # Pass specific ASPH latent dim
-        latent_dim_other_ffnn=config.LATENT_DIM_OTHER_FFNN, # Pass specific other FFNN latent dim
+        latent_dim_asph=config.LATENT_DIM_ASPH,
+        latent_dim_other_ffnn=config.LATENT_DIM_OTHER_FFNN,
         fusion_hidden_dims=config.FUSION_HIDDEN_DIMS
     ).to(config.DEVICE)
 
     print(f"Model instantiated successfully: \n{model}")
     print(f"Total model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
-    # Initialize CrossEntropyLoss with calculated class weights
+    # --- Calculate Class Weights (still needed for CrossEntropyLoss) ---
+    # Collect labels from the TRAIN_DATA_LIST (which is already processed)
+    train_topology_labels = [data['topology_label'].item() for data in train_data_list]
+    train_magnetism_labels = [data['magnetism_label'].item() for data in train_data_list]
+
+    topology_class_counts = Counter(train_topology_labels)
+    total_topology_samples = sum(topology_class_counts.values())
+    topology_num_classes = config.NUM_TOPOLOGY_CLASSES
+
+    topology_class_weights_raw = torch.zeros(topology_num_classes, dtype=torch.float32)
+    print("\n--- Topology Class Distribution (Training Set) ---")
+    for i in range(topology_num_classes):
+        class_name = None
+        for name, idx in config.TOPOLOGY_CLASS_MAPPING.items():
+            if idx == i:
+                class_name = name
+                break
+        count = topology_class_counts.get(i, 0)
+        print(f"Class {i} ('{class_name}'): {count} samples")
+        if count > 0:
+            topology_class_weights_raw[i] = total_topology_samples / (count * topology_num_classes)
+        else:
+            topology_class_weights_raw[i] = 100.0
+    topology_class_weights = topology_class_weights_raw / topology_class_weights_raw.sum() * topology_num_classes
+    print(f"Calculated Topology Class Weights: {topology_class_weights.tolist()}")
+    print("---------------------------------------------------\n")
+
+    magnetism_class_counts = Counter(train_magnetism_labels)
+    total_magnetism_samples = sum(magnetism_class_counts.values())
+    magnetism_num_classes = config.NUM_MAGNETISM_CLASSES
+
+    magnetism_class_weights_raw = torch.zeros(magnetism_num_classes, dtype=torch.float32)
+    print("--- Magnetism Class Distribution (Training Set) ---")
+    for i in range(magnetism_num_classes):
+        class_name = None
+        for name, idx in config.MAGNETISM_CLASS_MAPPING.items():
+            if idx == i:
+                class_name = name
+                break
+        count = magnetism_class_counts.get(i, 0)
+        print(f"Class {i} ('{class_name}'): {count} samples")
+        if count > 0:
+            magnetism_class_weights_raw[i] = total_magnetism_samples / (count * magnetism_num_classes)
+        else:
+            magnetism_class_weights_raw[i] = 100.0
+    magnetism_class_weights = magnetism_class_weights_raw / magnetism_class_weights_raw.sum() * magnetism_num_classes
+    print(f"Calculated Magnetism Class Weights: {magnetism_class_weights.tolist()}")
+    print("---------------------------------------------------\n")
+
+
     criterion_topology = nn.CrossEntropyLoss(weight=topology_class_weights.to(config.DEVICE))
     criterion_magnetism = nn.CrossEntropyLoss(weight=magnetism_class_weights.to(config.DEVICE))
 

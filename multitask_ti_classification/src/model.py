@@ -1,9 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import global_mean_pool, TransformerConv
+from torch_geometric.nn import global_mean_pool, TransformerConv, MessagePassing
 import torch_geometric
 from torch_geometric.data import Data as PyGData
+from torch_geometric.utils import add_self_loops
 from e3nn import o3
 from e3nn.o3 import FullyConnectedTensorProduct, Linear, Irreps
 from e3nn.nn import Gate
@@ -538,6 +539,119 @@ class DecompositionFeatureEncoder(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.network(features)
+    
+
+class SimpleEGNNConv(MessagePassing):
+    """Simplified EGNN convolution that's more reliable than full E3NN"""
+    def __init__(self, in_channels, out_channels, edge_dim=4):
+        super().__init__(aggr='add')
+        
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        
+        # Message network
+        self.message_mlp = nn.Sequential(
+            nn.Linear(2 * in_channels + edge_dim, out_channels),
+            nn.ReLU(),
+            nn.Linear(out_channels, out_channels)
+        )
+        
+        # Update network
+        self.update_mlp = nn.Sequential(
+            nn.Linear(in_channels + out_channels, out_channels),
+            nn.ReLU(),
+            nn.Linear(out_channels, out_channels)
+        )
+        
+        # Layer normalization
+        self.norm = nn.LayerNorm(out_channels)
+        
+    def forward(self, x, edge_index, edge_attr):
+        # Add self loops
+        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
+        
+        # Pad edge attributes for self loops
+        self_loop_attr = torch.zeros(x.size(0), edge_attr.size(1), device=edge_attr.device)
+        edge_attr = torch.cat([edge_attr, self_loop_attr], dim=0)
+        
+        # Propagate messages
+        out = self.propagate(edge_index, x=x, edge_attr=edge_attr)
+        
+        # Update
+        out = self.update_mlp(torch.cat([x, out], dim=-1))
+        
+        # Residual connection if dimensions match
+        if x.size(-1) == out.size(-1):
+            out = out + x
+            
+        return self.norm(out)
+    
+    def message(self, x_i, x_j, edge_attr):
+        # Create message from source node, target node, and edge attributes
+        message_input = torch.cat([x_i, x_j, edge_attr], dim=-1)
+        return self.message_mlp(message_input)
+
+class SimplifiedCrystalEncoder(nn.Module):
+    """Simplified crystal encoder without E3NN complexity"""
+    def __init__(self, 
+                 node_input_dim: int,
+                 hidden_dim: int = 128,
+                 num_layers: int = 4,
+                 output_dim: int = 64,
+                 radius: float = 5.0):
+        super().__init__()
+        
+        self.radius = radius
+        
+        # Initial projection
+        self.input_proj = nn.Linear(node_input_dim, hidden_dim)
+        
+        # EGNN layers
+        self.layers = nn.ModuleList()
+        for i in range(num_layers):
+            self.layers.append(SimpleEGNNConv(hidden_dim, hidden_dim))
+        
+        # Final projection
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim // 2, output_dim)
+        )
+        
+    def forward(self, data):
+        x, pos, batch = data.x, data.pos, data.batch
+        
+        # Initial projection
+        x = self.input_proj(x)
+        x = F.relu(x)
+        
+        # Build radius graph
+        edge_index = torch_geometric.nn.radius_graph(pos, self.radius, batch)
+        
+        if edge_index.size(1) == 0:
+            # No edges - return zero embedding
+            batch_size = batch.max().item() + 1 if batch is not None else 1
+            return torch.zeros(batch_size, self.output_proj[-1].out_features, device=x.device)
+        
+        # Compute edge attributes
+        row, col = edge_index
+        edge_vec = pos[row] - pos[col]
+        edge_dist = edge_vec.norm(dim=-1, keepdim=True)
+        edge_dir = edge_vec / (edge_dist + 1e-8)
+        edge_attr = torch.cat([edge_dir, edge_dist], dim=-1)
+        
+        # Apply EGNN layers
+        for layer in self.layers:
+            x = layer(x, edge_index, edge_attr)
+        
+        # Global pooling
+        x = global_mean_pool(x, batch)
+        
+        # Final projection
+        x = self.output_proj(x)
+        
+        return x
 
 # --- 6. Main Multi-Modal Classifier ---
 
@@ -577,11 +691,18 @@ class MultiModalMaterialClassifier(nn.Module):
     ):
         super().__init__()
 
-        self.crystal_encoder = RealSpaceEGNNEncoder(
-            node_input_scalar_dim=crystal_node_feature_dim,
-            hidden_irreps_str=egnn_hidden_irreps_str,
-            n_layers=egnn_num_layers,
-            radius=egnn_radius,
+        # self.crystal_encoder = RealSpaceEGNNEncoder(
+        #     node_input_scalar_dim=crystal_node_feature_dim,
+        #     hidden_irreps_str=egnn_hidden_irreps_str,
+        #     n_layers=egnn_num_layers,
+        #     radius=egnn_radius,
+        # )
+        self.crystal_encoder = SimplifiedCrystalEncoder(
+            node_input_dim=crystal_node_feature_dim, 
+            hidden_dim=128, 
+            num_layers=4, 
+            output_dim=config.LATENT_DIM_GNN,
+            radius=5.0
         )
         self.kspace_encoder = KSpaceTransformerGNNEncoder(
             node_feature_dim=kspace_node_feature_dim,
