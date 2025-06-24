@@ -13,6 +13,7 @@ from sklearn.model_selection import train_test_split
 import warnings
 import random
 import torch_geometric
+from collections import Counter # Import Counter for class weight calculation
 
 # Import from local modules
 from helper import config
@@ -31,8 +32,10 @@ def compute_metrics(predictions, targets, num_classes, task_name):
     targets_np = targets.cpu().numpy()
 
     acc = accuracy_score(targets_np, preds_np)
-    report = classification_report(targets_np, preds_np, output_dict=True, zero_division=0)
-    cm = confusion_matrix(targets_np, preds_np)
+    # Ensure all possible classes are covered in the report even if not predicted
+    labels = list(range(num_classes))
+    report = classification_report(targets_np, preds_np, output_dict=True, zero_division=0, labels=labels)
+    cm = confusion_matrix(targets_np, preds_np, labels=labels)
 
     print(f"\n--- {task_name} Metrics ---")
     print(f"Accuracy: {acc:.4f}")
@@ -87,25 +90,90 @@ def train_main_classifier():
     temp_train_dataset_for_scaler = torch.utils.data.Subset(full_dataset_for_dim_inference, train_indices)
     
     scalar_features_list = []
-    temp_train_loader_for_scaler = DataLoader(
+    train_topology_labels = [] # To collect labels for class weighting
+    train_magnetism_labels = [] # To collect labels for class weighting
+
+    temp_train_loader_for_scaler = DataLoader( # Using basic DataLoader for collecting labels
         temp_train_dataset_for_scaler, 
         batch_size=config.BATCH_SIZE,
         shuffle=False,
-        collate_fn=custom_collate_fn,
+        collate_fn=custom_collate_fn, # Use custom collate_fn here too
         num_workers=config.NUM_WORKERS
     )
 
     for batch in temp_train_loader_for_scaler:
         scalar_features_list.append(batch['scalar_features'].cpu().numpy())
+        train_topology_labels.extend(batch['topology_label'].cpu().numpy())
+        train_magnetism_labels.extend(batch['magnetism_label'].cpu().numpy())
     
+    scaler = None
     if scalar_features_list:
         all_train_scalar_features = np.vstack(scalar_features_list)
         scaler = StandardScaler()
         scaler.fit(all_train_scalar_features)
         print("StandardScaler fitted on training data.")
     else:
-        scaler = None
         print("No scalar features collected for scaler fitting. Scaler will not be used.")
+
+    # --- Calculate Class Weights for Topology ---
+    topology_class_counts = Counter(train_topology_labels)
+    total_topology_samples = sum(topology_class_counts.values())
+    topology_num_classes = config.NUM_TOPOLOGY_CLASSES # Use config value for consistent size
+
+    # Initialize weights to 1.0 / count to handle zero counts better later
+    topology_class_weights_raw = torch.zeros(topology_num_classes, dtype=torch.float32)
+    
+    print("\n--- Topology Class Distribution (Training Set) ---")
+    for i in range(topology_num_classes):
+        class_name = None
+        for name, idx in config.TOPOLOGY_CLASS_MAPPING.items():
+            if idx == i:
+                class_name = name
+                break
+        count = topology_class_counts.get(i, 0)
+        print(f"Class {i} ('{class_name}'): {count} samples")
+        if count > 0:
+            # Using inverse frequency for weighting
+            topology_class_weights_raw[i] = total_topology_samples / (count * topology_num_classes)
+        else:
+            # Assign a very high weight if class is missing to heavily penalize missing it
+            # This is a strong signal but can be unstable. Adjust if needed.
+            # A more robust approach might be to ensure no classes are truly missing from training,
+            # or use a small epsilon for count.
+            topology_class_weights_raw[i] = 100.0 # Example: a high fixed weight for truly missing classes
+
+    # Normalize weights - optional, but can make initial loss values more interpretable
+    topology_class_weights = topology_class_weights_raw / topology_class_weights_raw.sum() * topology_num_classes # Normalize to sum to num_classes
+
+    print(f"Calculated Topology Class Weights: {topology_class_weights.tolist()}")
+    print("---------------------------------------------------\n")
+
+
+    # --- Calculate Class Weights for Magnetism ---
+    magnetism_class_counts = Counter(train_magnetism_labels)
+    total_magnetism_samples = sum(magnetism_class_counts.values())
+    magnetism_num_classes = config.NUM_MAGNETISM_CLASSES
+
+    magnetism_class_weights_raw = torch.zeros(magnetism_num_classes, dtype=torch.float32)
+
+    print("--- Magnetism Class Distribution (Training Set) ---")
+    for i in range(magnetism_num_classes):
+        class_name = None
+        for name, idx in config.MAGNETISM_CLASS_MAPPING.items():
+            if idx == i:
+                class_name = name
+                break
+        count = magnetism_class_counts.get(i, 0)
+        print(f"Class {i} ('{class_name}'): {count} samples")
+        if count > 0:
+            magnetism_class_weights_raw[i] = total_magnetism_samples / (count * magnetism_num_classes)
+        else:
+            magnetism_class_weights_raw[i] = 100.0 # High weight for missing classes
+    
+    magnetism_class_weights = magnetism_class_weights_raw / magnetism_class_weights_raw.sum() * magnetism_num_classes
+    
+    print(f"Calculated Magnetism Class Weights: {magnetism_class_weights.tolist()}")
+    print("---------------------------------------------------\n")
 
     final_full_dataset = MaterialDataset(
         master_index_path=config.MASTER_INDEX_PATH,
@@ -146,15 +214,17 @@ def train_main_classifier():
         ffnn_hidden_dims_scalar=config.FFNN_HIDDEN_DIMS_SCALAR,
         
         latent_dim_gnn=config.LATENT_DIM_GNN,
-        latent_dim_ffnn=config.LATENT_DIM_FFNN,
+        latent_dim_asph=config.LATENT_DIM_ASPH, # Pass specific ASPH latent dim
+        latent_dim_other_ffnn=config.LATENT_DIM_OTHER_FFNN, # Pass specific other FFNN latent dim
         fusion_hidden_dims=config.FUSION_HIDDEN_DIMS
     ).to(config.DEVICE)
 
     print(f"Model instantiated successfully: \n{model}")
     print(f"Total model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
-    criterion_magnetism = nn.CrossEntropyLoss()
-    criterion_topology = nn.CrossEntropyLoss()
+    # Initialize CrossEntropyLoss with calculated class weights
+    criterion_topology = nn.CrossEntropyLoss(weight=topology_class_weights.to(config.DEVICE))
+    criterion_magnetism = nn.CrossEntropyLoss(weight=magnetism_class_weights.to(config.DEVICE))
 
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     

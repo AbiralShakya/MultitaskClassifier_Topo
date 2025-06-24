@@ -14,16 +14,16 @@ KSPACE_GRAPHS_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulato
 # Path to the master index directory (containing individual JSON metadata files)
 MASTER_INDEX_PATH = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata")
 
-# Topology Classification
+# Topology Classification - FIXED MAPPING
 TOPOLOGY_CLASS_MAPPING = {
-    "Topological Insulator": 0,
-    "Semimetal": 1,         # Includes "Weyl Semimetal", "Dirac Semimetal"
-    "Weyl Semimetal": 1,    # Explicitly map to Semimetal
-    "Dirac Semimetal": 1,   # Explicitly map to Semimetal
-    "Trivial": 2,           # Trivial metal/insulator (materials not classified as TI or TSM)
-    "Unknown": 2,           # Treat unknown topological types as trivial for classification purposes, or filter
+    "Trivial": 0,           # Trivial metal/insulator (materials not classified as TI or TSM)
+    "Topological Insulator": 1,
+    "Semimetal": 2,         # Includes "Weyl Semimetal", "Dirac Semimetal"
+    "Weyl Semimetal": 2,    # Explicitly map to Semimetal
+    "Dirac Semimetal": 2,   # Explicitly map to Semimetal
+    "Unknown": 0,           # Treat unknown topological types as trivial by default, or filter
 }
-NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values())) # Should be 3 (TI, SM, Trivial)
+NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values())) # Should be 3 (Trivial, TI, SM)
 
 NUM_WORKERS = 8
 
@@ -41,7 +41,11 @@ NUM_MAGNETISM_CLASSES = len(set(MAGNETISM_CLASS_MAPPING.values())) # Should be 4
 # --- Model Hyperparameters ---
 # Shared Encoder / Fusion
 LATENT_DIM_GNN = 128      # Output dimension of each GNN encoder
-LATENT_DIM_FFNN = 64      # Output dimension of each FFNN encoder
+
+# Specific latent dims for different FFNN types
+LATENT_DIM_ASPH = 3115    # Full dimension for ASPH as requested
+LATENT_DIM_OTHER_FFNN = 64 # Smaller dimension for other FFNNs (Scalar, Decomposition)
+
 FUSION_HIDDEN_DIMS = [256, 128] # Dimensions for shared fusion layers
 
 # GNN specific (Crystal Graph and K-space Graph)
@@ -49,6 +53,7 @@ GNN_NUM_LAYERS = 3
 GNN_HIDDEN_CHANNELS = 128 # For node features within GNN layers
 
 # FFNN specific (ASPH and Scalar features)
+# These now refer to the _input_ dimensions to the FFNNs, or internal hidden dims
 FFNN_HIDDEN_DIMS_ASPH = [256, 128]
 FFNN_HIDDEN_DIMS_SCALAR = [128, 64]
 
@@ -66,7 +71,7 @@ EGNN_RADIUS = 5.0 # Atomic interaction radius for EGNN
 # KSpace GNN specific parameters
 KSPACE_GNN_NUM_HEADS = 8 # As defined in model.py's KSpaceTransformerGNNEncoder
 
-# Loss weighting for multi-task learning
+# Loss weighting for multi-task learning - Initial weights, these might be overridden by class weights
 LOSS_WEIGHT_TOPOLOGY = 1.0
 LOSS_WEIGHT_MAGNETISM = 1.0
 
@@ -75,11 +80,11 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-TEST_RATIO = 0.1 
+TEST_RATIO = 0.1
 
 # --- Feature Dimensions (YOU MUST SET THESE ACCURATELY) ---
 CRYSTAL_NODE_FEATURE_DIM = 3 
-ASPH_FEATURE_DIM = 3115 
+ASPH_FEATURE_DIM = 3115
 BAND_REP_FEATURE_DIM = 4756 
 KSPACE_GRAPH_NODE_FEATURE_DIM = 10 
 

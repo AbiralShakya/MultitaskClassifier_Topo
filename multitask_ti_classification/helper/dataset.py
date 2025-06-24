@@ -7,7 +7,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Union, Any
 from sklearn.preprocessing import StandardScaler
-from collections import defaultdict
+from collections import defaultdict, Counter # Import Counter for debugging
 import warnings
 import json
 import glob
@@ -131,6 +131,10 @@ class MaterialDataset(Dataset):
              warnings.warn(f"Config DECOMPOSITION_FEATURE_DIM ({config.DECOMPOSITION_FEATURE_DIM}) does not match calculated ({self._expected_decomposition_feature_dim}). Using calculated.")
              config.DECOMPOSITION_FEATURE_DIM = self._expected_decomposition_feature_dim
 
+        # Ensure these are initialized only if they aren't already explicitly set in config
+        # and if a sample is available to infer from.
+        # This will be handled during initial dataset inference in classifier_training.py
+        # but prevents warnings if set to 0.
         self._crystal_node_feature_dim = getattr(config, 'CRYSTAL_NODE_FEATURE_DIM', 0)
         self._kspace_graph_node_feature_dim = getattr(config, 'KSPACE_GRAPH_NODE_FEATURE_DIM', 0)
         self._asph_feature_dim = getattr(config, 'ASPH_FEATURE_DIM', 0)
@@ -317,6 +321,7 @@ class MaterialDataset(Dataset):
         magnetism_label = torch.tensor(self.magnetism_class_map.get(magnetism_label_str, self.magnetism_class_map["UNKNOWN"]), dtype=torch.long)
 
         # --- Set Feature Dimensions in Config for Model Initialization (if not already set) ---
+        # Only update if the config value is 0 or None, indicating it wasn't pre-set
         if config.CRYSTAL_NODE_FEATURE_DIM is None or config.CRYSTAL_NODE_FEATURE_DIM == 0:
             config.CRYSTAL_NODE_FEATURE_DIM = crystal_graph.x.shape[1]
         if config.KSPACE_GRAPH_NODE_FEATURE_DIM is None or config.KSPACE_GRAPH_NODE_FEATURE_DIM == 0:
