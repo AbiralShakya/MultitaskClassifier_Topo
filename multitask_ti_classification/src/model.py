@@ -481,7 +481,6 @@ class SimplifiedCrystalEncoder(nn.Module):
         x = self.output_proj(x)
         
         return x
-    
 
 class MultiModalMaterialClassifier(nn.Module):
     """
@@ -567,7 +566,14 @@ class MultiModalMaterialClassifier(nn.Module):
             output_dim=latent_dim_other_ffnn 
         )
 
-        total_fused_dim = (latent_dim_gnn * 2) + latent_dim_asph + (latent_dim_other_ffnn * 2) 
+       # total_fused_dim = (latent_dim_gnn * 2) + latent_dim_asph + (latent_dim_other_ffnn * 2)
+        total_fused_dim = (
+            crystal_encoder_output_dim +      # Output of crystal_encoder
+            latent_dim_gnn +                  # Output of kspace_encoder
+            latent_dim_asph +                 # Output of asph_encoder (if its out_channels is latent_dim_asph)
+            latent_dim_other_ffnn +           # Output of scalar_encoder
+            latent_dim_other_ffnn             # Output of decomposition_encoder
+        ) 
 
         fusion_layers = []
         in_dim_fusion = total_fused_dim
