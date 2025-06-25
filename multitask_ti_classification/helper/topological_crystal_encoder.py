@@ -88,19 +88,22 @@ class MultiScaleEGNNConv(MessagePassing):
                                     message_net=self.message_networks[i])
             scale_messages.append(messages)
         
-        # Combine multi-scale messages with attention
-        combined_messages = torch.stack(scale_messages, dim=-1)  # [N, out_channels//num_scales, num_scales]
-        print(f"DEBUG: combined_messages after stack shape: {combined_messages.shape}")
-        combined_messages = combined_messages.view(x.size(0), -1)  # [N, out_channels]
-        print(f"DEBUG: combined_messages before attention shape: {combined_messages.shape}")
+        # Combine multi-scale messages for attention calculation
+        # Concatenate them to form a single tensor of total features, for the attention network input
+        combined_messages_for_attention = torch.cat(scale_messages, dim=-1) # Use cat here!
         
         # Apply attention weights
-        attention_weights = self.scale_attention(combined_messages)
-        scale_messages_reshaped = torch.stack(scale_messages, dim=1)  # [N, num_scales, out_channels//num_scales]
-        weighted_messages = torch.sum(
-            scale_messages_reshaped * attention_weights.unsqueeze(-1), 
-            dim=1
-        )
+        attention_weights = self.scale_attention(combined_messages_for_attention) # [N, num_scales]
+        
+        # Apply attention weights to individual scale messages and then concatenate
+        weighted_individual_messages = []
+        for i, msg in enumerate(scale_messages):
+            # unsqueeze attention_weights[:, i] to broadcast correctly across features
+            weighted_msg = msg * attention_weights[:, i].unsqueeze(-1) # [N, current_scale_dim] * [N, 1]
+            weighted_individual_messages.append(weighted_msg)
+        
+        # Concatenate the weighted messages to form the final weighted_messages
+        weighted_messages = torch.cat(weighted_individual_messages, dim=-1) # [N, out_channels]
         
         # Update with residual connection
         out = self.update_mlp(torch.cat([x_enhanced, weighted_messages], dim=-1))

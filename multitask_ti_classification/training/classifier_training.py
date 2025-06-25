@@ -248,8 +248,8 @@ def train_main_classifier():
             outputs = model(model_inputs)
             topology_logits = outputs['topology_logits']
             magnetism_logits = outputs['magnetism_logits']
-
-            topo_feats = batch['topology_label']
+            
+            topo_feats = outputs.get('topological_features', None)
             loss_topology = criterion_topology(
                 topology_logits,
                 batch['topology_label'],
