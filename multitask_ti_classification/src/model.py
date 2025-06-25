@@ -518,12 +518,12 @@ class MultiModalMaterialClassifier(nn.Module):
     ):
         super().__init__()
         
+        # FIXED: Use crystal_node_feature_dim instead of kspace_node_feature_dim
         self.crystal_encoder = SimplifiedCrystalEncoder(
-            node_feature_dim=crystal_node_feature_dim,
-            hidden_dim= egnn_hidden_irreps_str,
-            num_layers= egnn_num_layers, 
-            output_dim=latent_dim_gnn, 
-            radius = 3.0
+            node_feature_dim=crystal_node_feature_dim,  # FIXED: Was kspace_node_feature_dim
+            hidden_dim=kspace_gnn_hidden_channels,
+            num_layers=kspace_gnn_num_layers, 
+            output_dim=latent_dim_gnn 
         )
         self.kspace_encoder = PhysicsInformedKSpaceEncoder(
             node_feature_dim=kspace_node_feature_dim,
@@ -588,109 +588,3 @@ class MultiModalMaterialClassifier(nn.Module):
             'topology_logits': topology_logits,
             'magnetism_logits': magnetism_logits
         }
-
-# class MultiModalMaterialClassifier(nn.Module):
-#     """
-#     Multi-modal, multi-task classifier for materials.
-#     Combines Real-space EGNN, K-space Transformer GNN, ASPH, and Scalar features.
-#     """
-#     def __init__(
-#         self,
-#         crystal_node_feature_dim: int,
-#         kspace_node_feature_dim: int,
-#         asph_feature_dim: int,
-#         scalar_feature_dim: int,
-#         decomposition_feature_dim: int,
-#         num_topology_classes: int,
-#         num_magnetism_classes: int,
-        
-#         # Encoder specific params
-#         egnn_hidden_irreps_str: str = "64x0e + 32x1o + 16x2e",
-#         egnn_num_layers: int = 6,
-#         egnn_radius: float = 5.0,
-        
-#         kspace_gnn_hidden_channels: int = config.GNN_HIDDEN_CHANNELS,
-#         kspace_gnn_num_layers: int = config.GNN_NUM_LAYERS,
-#         kspace_gnn_num_heads: int = config.KSPACE_GNN_NUM_HEADS, # Using config value
-        
-#         ffnn_hidden_dims_asph: List[int] = config.FFNN_HIDDEN_DIMS_ASPH,
-#         ffnn_hidden_dims_scalar: List[int] = config.FFNN_HIDDEN_DIMS_SCALAR,
-        
-#         # Shared fusion params
-#         latent_dim_gnn: int = config.LATENT_DIM_GNN,
-#         latent_dim_asph: int = config.LATENT_DIM_ASPH,
-#         latent_dim_other_ffnn: int = config.LATENT_DIM_OTHER_FFNN,
-        
-#         fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
-#     ):
-#         super().__init__()
-
-#         self.crystal_encoder = RealSpaceEGNNEncoder(
-#             node_input_scalar_dim=crystal_node_feature_dim,
-#             hidden_irreps_str=egnn_hidden_irreps_str,
-#             n_layers=egnn_num_layers,
-#             radius=egnn_radius,
-#         )
-        
-#         self.kspace_encoder = PhysicsInformedKSpaceEncoder(
-#             node_feature_dim=kspace_node_feature_dim,
-#             hidden_dim=kspace_gnn_hidden_channels,
-#             num_layers=kspace_gnn_num_layers, 
-#             output_dim=latent_dim_gnn 
-#         )
-#         self.asph_encoder = PHTokenEncoder(
-#             input_dim=asph_feature_dim,
-#             out_channels=latent_dim_asph
-#         )
-#         self.scalar_encoder = ScalarFeatureEncoder(
-#             input_dim=scalar_feature_dim,
-#             hidden_dims=ffnn_hidden_dims_scalar,
-#             out_channels=latent_dim_other_ffnn
-#         )
-#         self.decomposition_encoder = EnhancedKSpacePhysicsFeatures(
-#             decomposition_dim=decomposition_feature_dim,
-#             gap_features_dim=config.BAND_GAP_SCALAR_DIM,
-#             dos_features_dim=config.DOS_FEATURE_DIM,
-#             fermi_features_dim=config.FERMI_FEATURE_DIM,
-#             output_dim=latent_dim_other_ffnn 
-#         )
-
-#         total_fused_dim = (latent_dim_gnn * 2) + latent_dim_asph + (latent_dim_other_ffnn * 2) 
-
-#         fusion_layers = []
-#         in_dim_fusion = total_fused_dim
-#         for h_dim in fusion_hidden_dims:
-#             fusion_layers.append(nn.Linear(in_dim_fusion, h_dim))
-#             fusion_layers.append(nn.BatchNorm1d(h_dim))
-#             fusion_layers.append(nn.ReLU())
-#             fusion_layers.append(nn.Dropout(p=config.DROPOUT_RATE))
-#             in_dim_fusion = h_dim 
-#         self.fusion_network = nn.Sequential(*fusion_layers)
-
-#         self.topology_head = nn.Linear(in_dim_fusion, num_topology_classes)
-#         self.magnetism_head = nn.Linear(in_dim_fusion, num_magnetism_classes)
-
-#     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-#         crystal_emb = self.crystal_encoder(inputs['crystal_graph'])
-#         kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
-#         asph_emb = self.asph_encoder(inputs['asph_features'])
-#         scalar_emb = self.scalar_encoder(inputs['scalar_features'])
-        
-#         decomposition_emb = self.decomposition_encoder(
-#             decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
-#             gap_features=inputs['kspace_physics_features'].get('gap_features'),
-#             dos_features=inputs['kspace_physics_features'].get('dos_features'),
-#             fermi_features=inputs['kspace_physics_features'].get('fermi_features')
-#         ) 
-        
-#         combined_emb = torch.cat([crystal_emb, kspace_emb, asph_emb, scalar_emb, decomposition_emb], dim=-1)
-
-#         fused_output = self.fusion_network(combined_emb)
-
-#         topology_logits = self.topology_head(fused_output)
-#         magnetism_logits = self.magnetism_head(fused_output)
-
-#         return {
-#             'topology_logits': topology_logits,
-#             'magnetism_logits': magnetism_logits
-#         }
