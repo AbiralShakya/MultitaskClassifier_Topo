@@ -1,0 +1,331 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
+from torch_geometric.utils import add_self_loops, degree
+from torch_geometric.nn import MessagePassing
+import torch_geometric
+import math
+from enhanced_topological_loss import EnhancedTopologicalLoss
+
+class MultiScaleEGNNConv(MessagePassing):
+    """
+    Enhanced EGNN convolution with multiple interaction ranges for capturing
+    both local and long-range topological features.
+    """
+    def __init__(self, in_channels, out_channels, edge_dim=4, num_scales=3):
+        super().__init__(aggr='add')
+        
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.num_scales = num_scales
+        
+        # Multi-scale message networks for different interaction ranges
+        self.message_networks = nn.ModuleList()
+        for i in range(num_scales):
+            self.message_networks.append(nn.Sequential(
+                nn.Linear(2 * in_channels + edge_dim + 1, out_channels // num_scales),  # +1 for scale info
+                nn.LayerNorm(out_channels // num_scales),
+                nn.SiLU(),
+                nn.Linear(out_channels // num_scales, out_channels // num_scales)
+            ))
+        
+        # Attention mechanism for scale fusion
+        self.scale_attention = nn.Sequential(
+            nn.Linear(out_channels, out_channels // 4),
+            nn.SiLU(),
+            nn.Linear(out_channels // 4, num_scales),
+            nn.Softmax(dim=-1)
+        )
+        
+        # Update network with topological bias
+        self.update_mlp = nn.Sequential(
+            nn.Linear(in_channels + out_channels, out_channels * 2),
+            nn.LayerNorm(out_channels * 2),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(out_channels * 2, out_channels)
+        )
+        
+        # Layer normalization with learnable parameters
+        self.norm = nn.LayerNorm(out_channels)
+        
+        # Position encoding for topological awareness
+        self.pos_encoder = nn.Sequential(
+            nn.Linear(3, out_channels // 4),
+            nn.SiLU(),
+            nn.Linear(out_channels // 4, out_channels // 4)
+        )
+        
+    def forward(self, x, edge_index, edge_attr, pos, scale_factors=None):
+        if scale_factors is None:
+            scale_factors = [1.0, 2.0, 4.0]  # Default multi-scale factors
+            
+        # Add positional encoding
+        pos_enc = self.pos_encoder(pos)
+        x_enhanced = x + pos_enc
+        
+        # Multi-scale message passing
+        scale_messages = []
+        
+        for i, scale in enumerate(scale_factors):
+            # Scale-specific edge filtering or weighting could be added here
+            scale_info = torch.full((edge_attr.size(0), 1), scale, device=edge_attr.device)
+            edge_attr_scaled = torch.cat([edge_attr, scale_info], dim=-1)
+            
+            # Propagate with scale-specific network
+            messages = self.propagate(edge_index, x=x_enhanced, edge_attr=edge_attr_scaled, 
+                                    message_net=self.message_networks[i])
+            scale_messages.append(messages)
+        
+        # Combine multi-scale messages with attention
+        combined_messages = torch.stack(scale_messages, dim=-1)  # [N, out_channels//num_scales, num_scales]
+        combined_messages = combined_messages.view(x.size(0), -1)  # [N, out_channels]
+        
+        # Apply attention weights
+        attention_weights = self.scale_attention(combined_messages)
+        scale_messages_reshaped = torch.stack(scale_messages, dim=1)  # [N, num_scales, out_channels//num_scales]
+        weighted_messages = torch.sum(
+            scale_messages_reshaped * attention_weights.unsqueeze(-1), 
+            dim=1
+        )
+        
+        # Update with residual connection
+        out = self.update_mlp(torch.cat([x_enhanced, weighted_messages], dim=-1))
+        
+        if x.size(-1) == out.size(-1):
+            out = out + x_enhanced
+            
+        return self.norm(out)
+    
+    def message(self, x_i, x_j, edge_attr, message_net):
+        message_input = torch.cat([x_i, x_j, edge_attr], dim=-1)
+        return message_net(message_input)
+
+
+class TopologicalFeatureExtractor(nn.Module):
+    """
+    Specialized module for extracting topological invariants and features
+    that are relevant for TI/TSM/trivial classification.
+    """
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        
+        # Chern number and Z2 invariant estimators
+        self.chern_estimator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Tanh()  # Bounded output for Chern-like features
+        )
+        
+        self.z2_estimator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 4),  # 4 Z2 invariants
+            nn.Sigmoid()  # Binary-like features
+        )
+        
+        # Band gap and Dirac point estimators
+        self.gap_estimator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 4),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 4, 1),
+            nn.Softplus()  # Positive gap values
+        )
+        
+        # Symmetry breaking indicators
+        self.symmetry_estimator = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 8)  # Various symmetry indicators
+        )
+        
+    def forward(self, x):
+        chern_features = self.chern_estimator(x)
+        z2_features = self.z2_estimator(x)
+        gap_features = self.gap_estimator(x)
+        symmetry_features = self.symmetry_estimator(x)
+        
+        return torch.cat([chern_features, z2_features, gap_features, symmetry_features], dim=-1)
+
+
+class AdaptivePooling(nn.Module):
+    """
+    Adaptive pooling that combines multiple pooling strategies
+    to capture different aspects of the crystal structure.
+    """
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        
+        # Attention-based pooling
+        self.attention_pool = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.SiLU(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
+        
+        # Pooling fusion weights
+        self.pool_fusion = nn.Sequential(
+            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU()
+        )
+        
+    def forward(self, x, batch):
+        # Standard pooling methods
+        mean_pool = global_mean_pool(x, batch)
+        max_pool = global_max_pool(x, batch)
+        
+        # Attention-weighted pooling
+        attention_weights = F.softmax(self.attention_pool(x), dim=0)
+        attention_pool = torch_geometric.utils.scatter(
+            x * attention_weights, batch, dim=0, reduce='sum'
+        )
+        
+        # Combine pooling strategies
+        combined = torch.cat([mean_pool, max_pool, attention_pool], dim=-1)
+        return self.pool_fusion(combined)
+
+
+class TopologicalCrystalEncoder(nn.Module):
+    """
+    Enhanced crystal encoder specifically designed for topological classification.
+    Incorporates multi-scale interactions, topological feature extraction,
+    and adaptive pooling for better TI/TSM/trivial discrimination.
+    """
+    def __init__(self, 
+                 node_feature_dim: int,
+                 hidden_dim: int = 256,  # Increased for better representation
+                 num_layers: int = 6,    # More layers for complex patterns
+                 output_dim: int = 128,  # Larger output for topological features
+                 radius: float = 8.0,    # Larger radius for long-range interactions
+                 num_scales: int = 3,    # Multi-scale interactions
+                 use_topological_features: bool = True):
+        super().__init__()
+        
+        self.radius = radius
+        self.use_topological_features = use_topological_features
+        
+        # Enhanced input projection with batch normalization
+        self.input_proj = nn.Sequential(
+            nn.Linear(node_feature_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(0.1)
+        )
+        
+        # Multi-scale EGNN layers
+        self.layers = nn.ModuleList()
+        for i in range(num_layers):
+            self.layers.append(MultiScaleEGNNConv(hidden_dim, hidden_dim, num_scales=num_scales))
+        
+        # Topological feature extractor
+        if use_topological_features:
+            self.topo_extractor = TopologicalFeatureExtractor(hidden_dim)
+            topo_feature_dim = 14  # 1 + 4 + 1 + 8 from TopologicalFeatureExtractor
+        else:
+            topo_feature_dim = 0
+        
+        # Adaptive pooling
+        self.adaptive_pool = AdaptivePooling(hidden_dim)
+        
+        # Final projection with topological features
+        final_input_dim = hidden_dim + topo_feature_dim
+        self.output_proj = nn.Sequential(
+            nn.Linear(final_input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+            nn.Dropout(0.15),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim // 2, output_dim)
+        )
+        
+        # Optional: Add a specialized topological classifier head
+        self.topological_head = nn.Sequential(
+            nn.Linear(output_dim, output_dim // 2),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(output_dim // 2, 3)  # TI, TSM, Trivial
+        )
+        
+    def forward(self, data, return_topological_logits=False):
+        x, pos, batch = data.x, data.pos, data.batch
+        
+        # Enhanced input projection
+        x = self.input_proj(x)
+        
+        # Build radius graph with larger radius for topological features
+        edge_index = torch_geometric.nn.radius_graph(pos, self.radius, batch)
+        
+        if edge_index.size(1) == 0:
+            batch_size = batch.max().item() + 1 if batch is not None else 1
+            zero_output = torch.zeros(batch_size, self.output_proj[-1].out_features, device=x.device)
+            if return_topological_logits:
+                zero_topo_logits = torch.zeros(batch_size, 3, device=x.device)
+                return zero_output, zero_topo_logits
+            return zero_output
+        
+        # Compute enhanced edge attributes
+        row, col = edge_index
+        edge_vec = pos[row] - pos[col]
+        edge_dist = edge_vec.norm(dim=-1, keepdim=True)
+        edge_dir = edge_vec / (edge_dist + 1e-8)
+        
+        # Add more geometric features for topological sensitivity
+        edge_dist_norm = edge_dist / (self.radius + 1e-8)  # Normalized distance
+        edge_attr = torch.cat([edge_dir, edge_dist_norm], dim=-1)
+        
+        # Apply multi-scale EGNN layers
+        for layer in self.layers:
+            x = layer(x, edge_index, edge_attr, pos)
+        
+        # Adaptive pooling
+        pooled_x = self.adaptive_pool(x, batch)
+        
+        # Extract topological features
+        if self.use_topological_features:
+            topo_features = self.topo_extractor(pooled_x)
+            final_features = torch.cat([pooled_x, topo_features], dim=-1)
+        else:
+            final_features = pooled_x
+        
+        # Final projection
+        output = self.output_proj(final_features)
+        
+        if return_topological_logits:
+            topo_logits = self.topological_head(output)
+            return output, topo_logits
+        
+        return output
+
+# Example usage function
+def create_enhanced_topological_classifier(crystal_node_feature_dim, num_classes=3):
+    """
+    Factory function to create an enhanced topological classifier.
+    
+    Args:
+        crystal_node_feature_dim: Dimension of node features
+        num_classes: Number of topological classes (default 3: TI, TSM, Trivial)
+    
+    Returns:
+        Tuple of (encoder, loss_function)
+    """
+    encoder = TopologicalCrystalEncoder(
+        node_feature_dim=crystal_node_feature_dim,
+        hidden_dim=256,
+        num_layers=6,
+        output_dim=128,
+        radius=8.0,
+        num_scales=3,
+        use_topological_features=True
+    )
+    
+    loss_fn = EnhancedTopologicalLoss(alpha=1.0, beta=0.5, gamma=0.3)
+    
+    return encoder, loss_fn

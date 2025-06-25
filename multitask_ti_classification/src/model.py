@@ -14,6 +14,7 @@ import warnings
 
 import helper.config as config
 from helper.kspace_physics_encoders import PhysicsInformedKSpaceEncoder, EnhancedKSpacePhysicsFeatures
+from helper.topological_crystal_encoder import TopologicalCrystalEncoder
 
 # --- 1. Crystal Graph Encoder (RealSpaceEGNN - now fixed for e3nn 0.5.6) ---
 
@@ -515,16 +516,33 @@ class MultiModalMaterialClassifier(nn.Module):
         latent_dim_other_ffnn: int = config.LATENT_DIM_OTHER_FFNN,
         
         fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
+
+        crystal_encoder_hidden_dim: int = 256,
+        crystal_encoder_num_layers: int = 6,
+        crystal_encoder_output_dim: int = 128,
+        crystal_encoder_radius: float = 8.0,
+        crystal_encoder_num_scales: int = 3,
+        crystal_encoder_use_topological_features: bool = True
     ):
         super().__init__()
         
-        # FIXED: Use crystal_node_feature_dim instead of kspace_node_feature_dim
-        self.crystal_encoder = SimplifiedCrystalEncoder(
-            node_feature_dim=crystal_node_feature_dim,  # FIXED: Was kspace_node_feature_dim
-            hidden_dim=kspace_gnn_hidden_channels,
-            num_layers=kspace_gnn_num_layers, 
-            output_dim=latent_dim_gnn 
+        # self.crystal_encoder = SimplifiedCrystalEncoder(
+        #     node_feature_dim=crystal_node_feature_dim, 
+        #     hidden_dim=kspace_gnn_hidden_channels,
+        #     num_layers=kspace_gnn_num_layers, 
+        #     output_dim=latent_dim_gnn 
+        # )
+        
+        self.crystal_encoder = TopologicalCrystalEncoder(
+            node_feature_dim=crystal_node_feature_dim,
+            hidden_dim=crystal_encoder_hidden_dim,
+            num_layers=crystal_encoder_num_layers,
+            output_dim=crystal_encoder_output_dim, 
+            radius=crystal_encoder_radius,
+            num_scales=crystal_encoder_num_scales,
+            use_topological_features=crystal_encoder_use_topological_features
         )
+
         self.kspace_encoder = PhysicsInformedKSpaceEncoder(
             node_feature_dim=kspace_node_feature_dim,
             hidden_dim=kspace_gnn_hidden_channels,

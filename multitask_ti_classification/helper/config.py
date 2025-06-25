@@ -193,8 +193,12 @@ EGNN_RADIUS = 5.0 # Atomic interaction radius for EGNN
 KSPACE_GNN_NUM_HEADS = 8 # As defined in model.py's KSpaceTransformerGNNEncoder
 
 # Loss weighting for multi-task learning
-LOSS_WEIGHT_TOPOLOGY = 1.0
-LOSS_WEIGHT_MAGNETISM = 1.0
+# LOSS_WEIGHT_TOPOLOGY = 1.0
+# LOSS_WEIGHT_MAGNETISM = 1.0
+LOSS_WEIGHT_TOPOLOGY        = 1.0   # α: weight on classification term
+LOSS_WEIGHT_TOPO_CONSISTENCY = 0.5   # β: weight on topological‐consistency term
+LOSS_WEIGHT_REGULARIZATION   = 0.3   # γ: weight on topo‐feature regularization term
+LOSS_WEIGHT_MAGNETISM       = 1.0   # weight on the magnetism classification term
 
 # --- Device Configuration ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
