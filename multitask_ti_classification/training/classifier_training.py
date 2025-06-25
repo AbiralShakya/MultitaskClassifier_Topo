@@ -135,7 +135,7 @@ def train_main_classifier():
         latent_dim_other_ffnn=config.LATENT_DIM_OTHER_FFNN,
         fusion_hidden_dims=config.FUSION_HIDDEN_DIMS, 
 
-        crystal_encoder_hidden_dim= 128,
+        crystal_encoder_hidden_dim= 256,
         crystal_encoder_num_layers = 6,
         crystal_encoder_output_dim = 128,
         crystal_encoder_radius = 8.0,

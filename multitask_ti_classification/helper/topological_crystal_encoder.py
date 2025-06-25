@@ -6,7 +6,6 @@ from torch_geometric.utils import add_self_loops, degree
 from torch_geometric.nn import MessagePassing
 import torch_geometric
 import math
-from enhanced_topological_loss import EnhancedTopologicalLoss
 
 class MultiScaleEGNNConv(MessagePassing):
     """
@@ -20,15 +19,26 @@ class MultiScaleEGNNConv(MessagePassing):
         self.out_channels = out_channels
         self.num_scales = num_scales
         
-        # Multi-scale message networks for different interaction ranges
+        base_scale_dim = out_channels // num_scales
+        remainder = out_channels % num_scales
+
         self.message_networks = nn.ModuleList()
         for i in range(num_scales):
+            current_scale_dim = base_scale_dim + (1 if i < remainder else 0)
             self.message_networks.append(nn.Sequential(
-                nn.Linear(2 * in_channels + edge_dim + 1, out_channels // num_scales),  # +1 for scale info
-                nn.LayerNorm(out_channels // num_scales),
+                nn.Linear(2 * in_channels + edge_dim + 1, current_scale_dim),
+                nn.LayerNorm(current_scale_dim),
                 nn.SiLU(),
-                nn.Linear(out_channels // num_scales, out_channels // num_scales)
+                nn.Linear(current_scale_dim, current_scale_dim)
             ))
+
+        # Attention mechanism for scale fusion - now expects out_channels (256)
+        self.scale_attention = nn.Sequential(
+            nn.Linear(out_channels, out_channels // 4), # This will be nn.Linear(256, 64)
+            nn.SiLU(),
+            nn.Linear(out_channels // 4, num_scales),
+            nn.Softmax(dim=-1)
+        )
         
         # Attention mechanism for scale fusion
         self.scale_attention = nn.Sequential(
@@ -50,18 +60,18 @@ class MultiScaleEGNNConv(MessagePassing):
         # Layer normalization with learnable parameters
         self.norm = nn.LayerNorm(out_channels)
         
-        # Position encoding for topological awareness
+        # Position encoding for topological awareness - make it dimension-aware
         self.pos_encoder = nn.Sequential(
-            nn.Linear(3, out_channels // 4),
+            nn.Linear(3, in_channels // 2),
             nn.SiLU(),
-            nn.Linear(out_channels // 4, out_channels // 4)
+            nn.Linear(in_channels // 2, in_channels)
         )
         
     def forward(self, x, edge_index, edge_attr, pos, scale_factors=None):
         if scale_factors is None:
             scale_factors = [1.0, 2.0, 4.0]  # Default multi-scale factors
             
-        # Add positional encoding
+        # Add positional encoding - now dimensions should match
         pos_enc = self.pos_encoder(pos)
         x_enhanced = x + pos_enc
         
@@ -80,7 +90,9 @@ class MultiScaleEGNNConv(MessagePassing):
         
         # Combine multi-scale messages with attention
         combined_messages = torch.stack(scale_messages, dim=-1)  # [N, out_channels//num_scales, num_scales]
+        print(f"DEBUG: combined_messages after stack shape: {combined_messages.shape}")
         combined_messages = combined_messages.view(x.size(0), -1)  # [N, out_channels]
+        print(f"DEBUG: combined_messages before attention shape: {combined_messages.shape}")
         
         # Apply attention weights
         attention_weights = self.scale_attention(combined_messages)
@@ -201,7 +213,7 @@ class TopologicalCrystalEncoder(nn.Module):
                  hidden_dim: int = 256,  # Increased for better representation
                  num_layers: int = 6,    # More layers for complex patterns
                  output_dim: int = 128,  # Larger output for topological features
-                 radius: float = 8.0,    # Larger radius for long-range interactions
+                 radius: float = 4.0,    # Larger radius for long-range interactions
                  num_scales: int = 3,    # Multi-scale interactions
                  use_topological_features: bool = True):
         super().__init__()
@@ -304,6 +316,46 @@ class TopologicalCrystalEncoder(nn.Module):
         
         return output
 
+
+class EnhancedTopologicalLoss(nn.Module):
+    """
+    Specialized loss function for topological classification that incorporates
+    physical constraints and topological invariant consistency.
+    """
+    def __init__(self, alpha=1.0, beta=0.5, gamma=0.3):
+        super().__init__()
+        self.alpha = alpha  # Classification loss weight
+        self.beta = beta    # Topological consistency weight
+        self.gamma = gamma  # Regularization weight
+        
+        self.classification_loss = nn.CrossEntropyLoss()
+        
+    def forward(self, logits, targets, topological_features=None):
+        # Standard classification loss
+        class_loss = self.classification_loss(logits, targets)
+        
+        total_loss = self.alpha * class_loss
+        
+        if topological_features is not None:
+            # Topological consistency loss
+            # Encourage physical constraints (e.g., Chern numbers should be integers)
+            chern_features = topological_features[:, 0:1]  # First feature is Chern-like
+            chern_consistency = torch.mean((chern_features - torch.round(chern_features))**2)
+            
+            # Z2 features should be binary-like
+            z2_features = topological_features[:, 1:5]  # Next 4 features are Z2-like
+            z2_consistency = torch.mean((z2_features - torch.round(z2_features))**2)
+            
+            topo_loss = chern_consistency + z2_consistency
+            total_loss += self.beta * topo_loss
+            
+            # Regularization term to prevent overfitting
+            reg_loss = torch.mean(torch.norm(topological_features, dim=-1))
+            total_loss += self.gamma * reg_loss
+        
+        return total_loss
+
+
 # Example usage function
 def create_enhanced_topological_classifier(crystal_node_feature_dim, num_classes=3):
     """
@@ -321,7 +373,7 @@ def create_enhanced_topological_classifier(crystal_node_feature_dim, num_classes
         hidden_dim=256,
         num_layers=6,
         output_dim=128,
-        radius=8.0,
+        radius=5.0,
         num_scales=3,
         use_topological_features=True
     )
