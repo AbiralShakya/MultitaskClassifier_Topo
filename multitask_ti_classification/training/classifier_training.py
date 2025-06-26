@@ -631,7 +631,6 @@ if __name__ == "__main__":
 
     main_training_loop()
 
-    # Clean up dummy directories and files
     import shutil
     if dummy_data_root.exists():
         shutil.rmtree(dummy_data_root)
