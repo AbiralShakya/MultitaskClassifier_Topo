@@ -2,20 +2,23 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
+from torch_geometric.data import Data as PyGData
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import numpy as np
 import os
 import json
+import tqdm 
 import pickle
+import pickle # Added for dummy data generation
 from pathlib import Path
-import tqdm
 import warnings
 import random
 import torch_geometric
-import shutil
+import shutil # Added for dummy data cleanup
 from collections import Counter
-from torch_geometric.data import Data as PyGData
+# import tqdm # tqdm is already imported from the snippet
+
 
 # Import from local modules
 import helper.config as config
@@ -34,11 +37,26 @@ torch.serialization.add_safe_globals([
 
 def compute_metrics(predictions, targets, num_classes, task_name):
     """Computes accuracy and detailed classification report."""
+    # Ensure inputs are not empty before proceeding
+    if len(predictions) == 0 or len(targets) == 0:
+        print(f"\n--- {task_name} Metrics ---")
+        print("No predictions or targets available for this task. Skipping metric computation.")
+        return 0.0, {}, {} # Return dummy values
+
     preds_np = predictions.cpu().numpy()
     targets_np = targets.cpu().numpy()
 
     acc = accuracy_score(targets_np, preds_np)
     labels = list(range(num_classes))
+    # Handle cases where `labels` might not appear in `targets_np` or `preds_np`
+    # and adjust the `labels` parameter in classification_report if necessary
+    unique_targets = np.unique(targets_np).tolist()
+    unique_preds = np.unique(preds_np).tolist()
+    all_present_labels = sorted(list(set(unique_targets + unique_preds)))
+    
+    # Filter labels to only include those that are actually present to avoid empty reports for missing classes
+    # Or, rely on zero_division=0 and labels=labels to ensure full report structure
+    
     report = classification_report(targets_np, preds_np, output_dict=True, zero_division=0, labels=labels)
     cm = confusion_matrix(targets_np, preds_np, labels=labels)
 
@@ -74,7 +92,6 @@ def train_main_classifier():
     )
     
     # Access a dummy sample to infer dimensions and trigger config updates in MaterialDataset's __getitem__
-    # This is a hack; ideally, your config would be fully populated before dataset initialization.
     try:
         if len(full_dataset_raw) > 0:
             _ = full_dataset_raw[0] 
@@ -93,11 +110,8 @@ def train_main_classifier():
     # Iterate through the raw dataset to collect data for preprocessing
     for i in tqdm(range(len(full_dataset_raw)), desc="Collecting raw data for preprocessing"):
         try:
-            # When calling MaterialDataset[i], it returns a dict with tensors.
-            # We need to collect these dicts before fitting the preprocessor.
             item_data = full_dataset_raw[i]
             # Ensure tensors are on CPU for numpy conversion in preprocessor
-            # This is important if MaterialDataset returns CUDA tensors by default
             item_data_cpu = {}
             for k, v in item_data.items():
                 if isinstance(v, torch.Tensor):
@@ -112,31 +126,13 @@ def train_main_classifier():
             continue
 
     # Fit scalers and transform all data
-    # The preprocessor will update the scalar features and ensure consistent tensor types.
     processed_data_list = preprocessor.fit_transform(all_raw_data_dicts)
     print(f"Data preprocessing complete. Processed {len(processed_data_list)} samples.")
     
     print("\nCreating stratified data splits with StratifiedDataSplitter...")
-    # Stratify by combined_label (which is generated in collate_fn, not directly present here)
-    # So, we stratify by primary labels (topology + magnetism) available in processed_data_list
-    # Note: If your splitter expects a single 'y', you might need to combine them for splitting
-    # For now, let's assume `split` can handle a list of dicts directly with a specified label key
-    
-    # To stratify correctly, the splitter needs access to labels.
-    # If the splitter takes `y` as a list of labels, we must provide it.
-    # Let's extract the combined label as the primary stratification target from `processed_data_list`
-    # You will need to make sure your `MaterialDataset` also returns the raw strings `topological_class` 
-    # and `magnetic_type` in `__getitem__` for the preprocessor and splitter to access.
-    # Alternatively, the splitter could use the integer `topology_label` and `magnetism_label`
-    # and you define a combined target *before* splitting for stratification.
-
-    # Re-extract labels for stratification from the processed_data_list directly
-    # This implies that `processed_data_list` elements (dicts) contain 'topology_label' and 'magnetism_label'
     stratify_labels_topo = [d['topology_label'].item() for d in processed_data_list]
     stratify_labels_mag = [d['magnetism_label'].item() for d in processed_data_list]
 
-    # Combine topology and magnetism labels for stratification if a single target is needed.
-    # A simple way to combine: (topo_label, mag_label) tuple as a stratification key.
     stratify_labels_combined = [
         config.get_combined_label_from_ints(topo, mag)
         for topo, mag in zip(stratify_labels_topo, stratify_labels_mag)
@@ -146,8 +142,6 @@ def train_main_classifier():
         test_size=config.TEST_RATIO,
         val_size=config.VAL_RATIO,
         random_state=config.SEED,
-        # The `split` method needs to know which key in `processed_data_list` to stratify by.
-        # Assuming `split` method is designed to take the `stratify_labels_combined` list directly.
     )
     
     train_data_list, val_data_list, test_data_list = splitter.split(
@@ -191,7 +185,7 @@ def train_main_classifier():
         latent_dim_other_ffnn=config.LATENT_DIM_OTHER_FFNN,
         fusion_hidden_dims=config.FUSION_HIDDEN_DIMS, 
 
-        crystal_encoder_hidden_dim=config.crystal_encoder_hidden_dim, # From config
+        crystal_encoder_hidden_dim=config.crystal_encoder_hidden_dim, 
         crystal_encoder_num_layers=config.crystal_encoder_num_layers,
         crystal_encoder_output_dim=config.crystal_encoder_output_dim,
         crystal_encoder_radius=config.crystal_encoder_radius,
@@ -203,9 +197,6 @@ def train_main_classifier():
     print(f"Total model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
     # --- Calculate Class Weights (for CrossEntropyLoss) ---
-    # These weights are for the CrossEntropyLoss component of EnhancedTopologicalLoss
-    # and the standalone Magnetism CrossEntropyLoss.
-    
     # Combined task (Primary) class weights
     train_combined_labels = [data['combined_label'].item() for data in train_data_list]
     combined_class_counts = Counter(train_combined_labels)
@@ -215,7 +206,7 @@ def train_main_classifier():
     combined_class_weights_raw = torch.zeros(combined_num_classes, dtype=torch.float32)
     print("\n--- Combined Class Distribution (Training Set) ---")
     for i in range(combined_num_classes):
-        class_name_tuple = None # Get string name for readability
+        class_name_tuple = None 
         for k, v in config.COMBINED_CLASS_MAPPING.items():
             if v == i:
                 class_name_tuple = k
@@ -280,21 +271,17 @@ def train_main_classifier():
 
 
     # --- Loss Functions ---
-    # Primary loss for the main 6-class combined task
     criterion_combined = nn.CrossEntropyLoss(weight=combined_class_weights.to(config.DEVICE)).to(config.DEVICE)
     
-    # Auxiliary topology loss with topological regularization
     criterion_topology_aux = EnhancedTopologicalLoss(
-        alpha=1.0, # This is the weight for classification loss within EnhancedTopologicalLoss
+        alpha=1.0, 
         beta=config.LOSS_WEIGHT_TOPO_CONSISTENCY,
         gamma=config.LOSS_WEIGHT_REGULARIZATION
     ).to(config.DEVICE)
-    # Set the classification loss for the auxiliary topology task, with weights
     criterion_topology_aux.classification_loss = nn.CrossEntropyLoss(
         weight=topology_class_weights.to(config.DEVICE)
     )
 
-    # Auxiliary magnetism loss
     criterion_magnetism_aux = nn.CrossEntropyLoss(
         weight=magnetism_class_weights.to(config.DEVICE)
     ).to(config.DEVICE)
@@ -329,7 +316,7 @@ def train_main_classifier():
                     if isinstance(batch['kspace_physics_features'][sub_key], torch.Tensor):
                         batch['kspace_physics_features'][sub_key] = batch['kspace_physics_features'][sub_key].to(config.DEVICE) 
             else:
-                 warnings.warn("kspace_physics_features not found or not a dict in batch. Using default values for model_inputs (may cause errors if not handled by model).")
+                 warnings.warn(f"kspace_physics_features not found or not a dict in batch {batch_idx}. Using default values for model_inputs (may cause errors if not handled by model).")
                  # If kspace_physics_features is missing, provide dummy zeros to model to avoid errors
                  batch['kspace_physics_features'] = {
                      'decomposition_features': torch.zeros(batch['crystal_graph'].num_graphs, config.DECOMPOSITION_FEATURE_DIM, device=config.DEVICE),
@@ -368,9 +355,8 @@ def train_main_classifier():
             # Combine all losses with their respective weights from config
             total_loss = (
                 config.LOSS_WEIGHT_PRIMARY_COMBINED * loss_combined +
-                config.LOSS_WEIGHT_AUX_TOPOLOGY * loss_topology_aux + # EnhancedTopologicalLoss includes its own beta/gamma
+                config.LOSS_WEIGHT_AUX_TOPOLOGY * loss_topology_aux + 
                 config.LOSS_WEIGHT_AUX_MAGNETISM * loss_magnetism_aux
-                # The topological regularization part is now internal to loss_topology_aux (EnhancedTopologicalLoss)
             )
             
             total_train_loss += total_loss.item()
@@ -395,7 +381,7 @@ def train_main_classifier():
         all_val_mag_labels = []
 
         with torch.no_grad():
-            for batch in tqdm(val_loader, desc=f"Epoch {epoch+1} Validation"):
+            for batch_idx, batch in enumerate(tqdm(val_loader, desc=f"Epoch {epoch+1} Validation")):
                 # Move data to device (similar to train loop)
                 batch['crystal_graph'] = batch['crystal_graph'].to(config.DEVICE)
                 batch['kspace_graph'] = batch['kspace_graph'].to(config.DEVICE)
@@ -407,7 +393,7 @@ def train_main_classifier():
                         if isinstance(batch['kspace_physics_features'][sub_key], torch.Tensor):
                             batch['kspace_physics_features'][sub_key] = batch['kspace_physics_features'][sub_key].to(config.DEVICE) 
                 else:
-                    warnings.warn("kspace_physics_features not found or not a dict in batch during validation.")
+                    warnings.warn(f"kspace_physics_features not found or not a dict in batch {batch_idx} during validation. Using dummy.")
                     batch['kspace_physics_features'] = { # Provide dummy if missing for consistent model input
                         'decomposition_features': torch.zeros(batch['crystal_graph'].num_graphs, config.DECOMPOSITION_FEATURE_DIM, device=config.DEVICE),
                         'gap_features': torch.zeros(batch['crystal_graph'].num_graphs, config.BAND_GAP_SCALAR_DIM, device=config.DEVICE),
@@ -463,6 +449,13 @@ def train_main_classifier():
         print(f"  Train Loss: {avg_train_loss:.4f}")
         print(f"  Validation Loss: {avg_val_loss:.4f}")
 
+        # --- Debugging print for validation combined metrics ---
+        print(f"DEBUG: all_val_combined_preds length: {len(all_val_combined_preds)}")
+        print(f"DEBUG: all_val_combined_labels length: {len(all_val_combined_labels)}")
+        if len(all_val_combined_preds) > 0:
+            print(f"DEBUG: First 5 val_combined_preds: {all_val_combined_preds[:5]}")
+            print(f"DEBUG: First 5 val_combined_labels: {all_val_combined_labels[:5]}")
+
         _ = compute_metrics(torch.tensor(all_val_combined_preds), torch.tensor(all_val_combined_labels), config.NUM_COMBINED_CLASSES, "Combined Classification (Validation)")
         _ = compute_metrics(torch.tensor(all_val_topo_preds), torch.tensor(all_val_topo_labels), config.NUM_TOPOLOGY_CLASSES, "Topology Classification (Validation)")
         _ = compute_metrics(torch.tensor(all_val_mag_preds), torch.tensor(all_val_mag_labels), config.NUM_MAGNETISM_CLASSES, "Magnetism Classification (Validation)")
@@ -507,6 +500,7 @@ def train_main_classifier():
                     if isinstance(batch['kspace_physics_features'][sub_key], torch.Tensor):
                         batch['kspace_physics_features'][sub_key] = batch['kspace_physics_features'][sub_key].to(config.DEVICE) 
             else:
+                warnings.warn(f"kspace_physics_features not found or not a dict in batch during test evaluation. Using dummy.")
                 batch['kspace_physics_features'] = { # Provide dummy if missing for consistent model input
                     'decomposition_features': torch.zeros(batch['crystal_graph'].num_graphs, config.DECOMPOSITION_FEATURE_DIM, device=config.DEVICE),
                     'gap_features': torch.zeros(batch['crystal_graph'].num_graphs, config.BAND_GAP_SCALAR_DIM, device=config.DEVICE),
@@ -540,6 +534,13 @@ def train_main_classifier():
             all_test_mag_labels.extend(batch['magnetism_label'].cpu().numpy())
 
     print("\nTest Set Results:")
+    # --- Debugging print for test combined metrics ---
+    print(f"DEBUG: all_test_combined_preds length: {len(all_test_combined_preds)}")
+    print(f"DEBUG: all_test_combined_labels length: {len(all_test_combined_labels)}")
+    if len(all_test_combined_preds) > 0:
+        print(f"DEBUG: First 5 test_combined_preds: {all_test_combined_preds[:5]}")
+        print(f"DEBUG: First 5 test_combined_labels: {all_test_combined_labels[:5]}")
+
     _ = compute_metrics(torch.tensor(all_test_combined_preds), torch.tensor(all_test_combined_labels), config.NUM_COMBINED_CLASSES, "Combined Classification")
     _ = compute_metrics(torch.tensor(all_test_topo_preds), torch.tensor(all_test_topo_labels), config.NUM_TOPOLOGY_CLASSES, "Topology Classification")
     _ = compute_metrics(torch.tensor(all_test_mag_preds), torch.tensor(all_test_mag_labels), config.NUM_MAGNETISM_CLASSES, "Magnetism Classification")
@@ -550,12 +551,9 @@ def main_training_loop():
 # Example of how to run the training function
 if __name__ == "__main__":
     # --- Dummy Data setup for local execution ---
-    # These paths are set up to match the hardcoded paths in your MaterialDataset
-    # For a real run, ensure your actual data is at these locations
     dummy_data_root = Path("./dummy_multimodal_db")
     dummy_master_index_path = dummy_data_root / "metadata"
     dummy_kspace_graphs_base_dir = dummy_data_root / "kspace_graphs"
-    # IMPORTANT: These paths below are hardcoded in MaterialDataset, ensure they exist or change in MaterialDataset.
     dummy_crystal_graphs_base_dir_scratch = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs")
     dummy_vectorized_features_base_dir_scratch = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features")
     
@@ -565,10 +563,6 @@ if __name__ == "__main__":
     dummy_crystal_graphs_base_dir_scratch.mkdir(parents=True, exist_ok=True)
     dummy_vectorized_features_base_dir_scratch.mkdir(parents=True, exist_ok=True)
 
-    # Create dummy JSON metadata files and corresponding feature files for a minimal run
-    # Needs at least one 'Trivial', 'NM' and one 'Topological Insulator', 'NM'
-    # and one 'Semimetal', 'FM' and one 'Trivial', 'AFM' to have some class diversity
-    # in the dummy data for the classifiers.
     dummy_json_data = [
         {'jid': 'mat_001', 'formula': 'GaAs', 'space_group': 'F-43m', 'space_group_number': 216,
          'topological_class': 'Trivial', 'magnetic_type': 'NM', 'band_gap': 1.5,
@@ -582,7 +576,6 @@ if __name__ == "__main__":
         {'jid': 'mat_004', 'formula': 'FeSi', 'space_group': 'P2_13', 'space_group_number': 198,
          'topological_class': 'Trivial', 'magnetic_type': 'AFM', 'band_gap': 1.2,
          'formation_energy': -0.9, 'energy_above_hull': 0.0, 'density': 6.18, 'volume': 60.0, 'nsites': 2, 'total_magnetization': 0.5, 'theoretical': True},
-         # Add more diverse data to ensure all classes are present if possible
          {'jid': 'mat_005', 'formula': 'Cd3As2', 'space_group': 'I4_1cd', 'space_group_number': 110,
           'topological_class': 'Semimetal', 'magnetic_type': 'NM', 'band_gap': 0.0,
           'formation_energy': -0.6, 'energy_above_hull': 0.0, 'density': 6.2, 'volume': 150.0, 'nsites': 5, 'total_magnetization': 0.0, 'theoretical': True},
@@ -591,50 +584,41 @@ if __name__ == "__main__":
           'formation_energy': -0.4, 'energy_above_hull': 0.0, 'density': 5.0, 'volume': 200.0, 'nsites': 10, 'total_magnetization': 1.8, 'theoretical': True},
     ]
 
-    # Dynamically update config based on dummy data requirements
-    # This is important for the model to correctly initialize.
     if not hasattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM'): config.BASE_DECOMPOSITION_FEATURE_DIM = 2
-    if not hasattr(config, 'ALL_POSSIBLE_IRREPS'): config.ALL_POSSIBLE_IRREPS = ['A1', 'E1', 'T2'] # minimal set
+    if not hasattr(config, 'ALL_POSSIBLE_IRREPS'): config.ALL_POSSIBLE_IRREPS = ['A1', 'E1', 'T2'] 
     if not hasattr(config, 'MAX_DECOMPOSITION_INDICES_LEN'): config.MAX_DECOMPOSITION_INDICES_LEN = 5
-    # Calculate _expected_decomposition_feature_dim and then set config.DECOMPOSITION_FEATURE_DIM
     _expected_decomp_dim = config.BASE_DECOMPOSITION_FEATURE_DIM + len(config.ALL_POSSIBLE_IRREPS) + config.MAX_DECOMPOSITION_INDICES_LEN
     config.DECOMPOSITION_FEATURE_DIM = _expected_decomp_dim
 
-    # Set some initial dummy values for dynamic config attributes,
-    # as MaterialDataset's __getitem__ will try to set them.
-    config.CRYSTAL_NODE_FEATURE_DIM = 3 # Dummy, will be inferred by dataset
-    config.KSPACE_GRAPH_NODE_FEATURE_DIM = 10 # Dummy
-    config.ASPH_FEATURE_DIM = 3115 # Dummy
-    config.SCALAR_TOTAL_DIM = 4756 + 7 # Dummy, band_rep_dim + scalar_metadata_dim (7 from MaterialDataset)
-    config.BAND_REP_FEATURE_DIM = 4756 # Dummy
-    config.BAND_GAP_SCALAR_DIM = 1 # Dummy
-    config.DOS_FEATURE_DIM = 100 # Dummy
-    config.FERMI_FEATURE_DIM = 1 # Dummy
+    config.CRYSTAL_NODE_FEATURE_DIM = 3 
+    config.KSPACE_GRAPH_NODE_FEATURE_DIM = 10 
+    config.ASPH_FEATURE_DIM = 3115 
+    config.SCALAR_TOTAL_DIM = 4756 + 7 
+    config.BAND_REP_FEATURE_DIM = 4756 
+    config.BAND_GAP_SCALAR_DIM = 1 
+    config.DOS_FEATURE_DIM = 100 
+    config.FERMI_FEATURE_DIM = 1 
 
     for data in tqdm(dummy_json_data, desc="Creating dummy data files"):
-        # Create metadata JSON
         with open(dummy_master_index_path / f"{data['jid']}.json", 'w') as f:
             json.dump(data, f)
         
-        # Create dummy crystal_graph.pkl
         (dummy_crystal_graphs_base_dir_scratch / data['jid']).mkdir(parents=True, exist_ok=True)
         with open(dummy_crystal_graphs_base_dir_scratch / data['jid'] / "crystal_graph.pkl", 'wb') as f:
             pickle.dump({'x': np.random.rand(10, config.CRYSTAL_NODE_FEATURE_DIM), 
                          'pos': np.random.rand(10, 3), 
                          'edge_index': np.random.randint(0, 10, (2, 20))}, f)
         
-        # Create dummy asph_features_rev2.npy and band_rep_features.npy
         (dummy_vectorized_features_base_dir_scratch / data['jid']).mkdir(parents=True, exist_ok=True)
         np.save(dummy_vectorized_features_base_dir_scratch / data['jid'] / "asph_features_rev2.npy", np.random.rand(config.ASPH_FEATURE_DIM))
         np.save(dummy_vectorized_features_base_dir_scratch / data['jid'] / "band_rep_features.npy", np.random.rand(config.BAND_REP_FEATURE_DIM))
         
-        # Create dummy kspace graph related files
         sg_folder = dummy_kspace_graphs_base_dir / f"SG_{str(int(data['space_group_number'])).zfill(3)}"
         sg_folder.mkdir(parents=True, exist_ok=True)
         
         dummy_kspace_graph_pyg = PyGData(x=torch.randn(5, config.KSPACE_GRAPH_NODE_FEATURE_DIM), 
                                          edge_index=torch.randint(0, 5, (2, 8)),
-                                         pos=torch.randn(5,3)) # Ensure pos for dummy
+                                         pos=torch.randn(5,3))
         torch.save(dummy_kspace_graph_pyg, sg_folder / "kspace_graph.pt")
         
         torch.save({'decomposition_features': torch.randn(config.BASE_DECOMPOSITION_FEATURE_DIM)}, sg_folder / "physics_features.pt")
@@ -645,10 +629,10 @@ if __name__ == "__main__":
                 "decomposition_branches": {"decomposition_indices": [np.random.randint(0,10) for _ in range(config.MAX_DECOMPOSITION_INDICES_LEN)]}
             }, f)
 
-    # Now, run the training
     main_training_loop()
 
     # Clean up dummy directories and files
+    import shutil
     if dummy_data_root.exists():
         shutil.rmtree(dummy_data_root)
         print(f"Cleaned up {dummy_data_root}")
