@@ -88,14 +88,21 @@ class ImprovedDataPreprocessor:
                 scaled_features = self.feature_scalers['decomp'].transform(features.reshape(1, -1))
                 transformed_data['kspace_physics_features']['decomposition_features'] = torch.FloatTensor(scaled_features.flatten())
             
-            # Normalize crystal node features (if they're not already normalized)
-            if 'crystal_graph' in data and hasattr(data['crystal_graph'], 'x') and data['crystal_graph'].x is not None:
-                x = data['crystal_graph'].x
-                # Check for standard deviation to avoid normalizing already scaled features or all-zero features
-                if x.numel() > 0 and x.std() > 1e-6: # Only normalize if not all zeros and std is significant
-                    x_normalized = (x - x.mean(dim=0)) / (x.std(dim=0) + 1e-8)
-                    transformed_data['crystal_graph'].x = x_normalized
-            
+            # # Normalize crystal node features (if they're not already normalized)
+            # if 'crystal_graph' in data and hasattr(data['crystal_graph'], 'x') and data['crystal_graph'].x is not None:
+            #     x = data['crystal_graph'].x
+            #     # Check for standard deviation to avoid normalizing already scaled features or all-zero features
+            #     if x.numel() > 0 and x.std() > 1e-6: # Only normalize if not all zeros and std is significant
+            #         x_normalized = (x - x.mean(dim=0)) / (x.std(dim=0) + 1e-8)
+            #         transformed_data['crystal_graph'].x = x_normalized
+
+            if x.numel() > 0: # Ensure tensor is not empty
+                x_mean = x.mean(dim=0)
+                x_std = x.std(dim=0, unbiased=False) # Use unbiased=False for n instead of n-1 for std, if it suits your needs
+                x_std_safe = torch.where(x_std == 0, torch.tensor(1.0, device=x_std.device), x_std) # Replace 0 std with 1.0
+                x_normalized = (x - x_mean) / (x_std_safe + 1e-8)
+                transformed_data['crystal_graph'].x = x_normalized
+                 
             # Normalize k-space node features
             if 'kspace_graph' in data and hasattr(data['kspace_graph'], 'x') and data['kspace_graph'].x is not None:
                 x = data['kspace_graph'].x

@@ -6,6 +6,7 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import numpy as np
 import os
+from torch_geometric.data import Data as PyGData
 import json
 import pickle
 from pathlib import Path
@@ -16,15 +17,13 @@ import shutil
 from collections import Counter
 from tqdm import tqdm
 
-
 # Import from local modules
+from src.model import MultiModalMaterialClassifier
 import helper.config as config
-from torch_geometric.data import Data as PyGData
 from helper.enhanced_topological_loss import EnhancedTopologicalLoss
 from helper.dataset import MaterialDataset, custom_collate_fn 
-from src.model import MultiModalMaterialClassifier
-from helper.data_processing import ImprovedDataPreprocessor
-from helper.data_processing import StratifiedDataSplitter
+# Make sure these are correctly imported from your helper/data_processing.py
+from helper.data_processing import ImprovedDataPreprocessor, StratifiedDataSplitter 
 
 # Ensure PyG's global settings are safe for serialization
 torch.serialization.add_safe_globals([
@@ -78,7 +77,6 @@ def train_main_classifier():
     
     try:
         if len(full_dataset_raw) > 0:
-            # MaterialDataset.__getitem__ populates dynamic config attributes
             _ = full_dataset_raw[0] 
             print("Dataset dimensions inferred and config updated (if dynamic).")
         else:
@@ -92,8 +90,7 @@ def train_main_classifier():
     preprocessor = ImprovedDataPreprocessor()
     
     all_raw_data_dicts = []
-    # No tqdm here as requested
-    for i in range(len(full_dataset_raw)): 
+    for i in range(len(full_dataset_raw)): # No tqdm here as requested
         try:
             item_data = full_dataset_raw[i]
             item_data_cpu = {}
@@ -114,20 +111,20 @@ def train_main_classifier():
     
     print("\nCreating stratified data splits with StratifiedDataSplitter...")
     
-    # Instantiate the splitter object. This is crucial for calling its methods.
-    splitter = StratifiedDataSplitter( 
+    # Explicitly instantiate the splitter object. This line is crucial.
+    my_splitter_instance = StratifiedDataSplitter( 
         test_size=config.TEST_RATIO,
         val_size=config.VAL_RATIO,
         random_state=config.SEED
     )
     
     # --- DEBUG PRINT FOR SPLITTER TYPE ---
-    print(f"DEBUG: Type of splitter object before calling .split(): {type(splitter)}")
+    print(f"DEBUG: Type of my_splitter_instance before calling .split(): {type(my_splitter_instance)}")
     # --- END DEBUG PRINT ---
 
-    # Call the split method on the instantiated object.
+    # Call the split method on the *instantiated object*.
     # The StratifiedDataSplitter in data_processing.py internally extracts labels for stratification.
-    train_data_list, val_data_list, test_data_list = splitter.split(processed_data_list)
+    train_data_list, val_data_list, test_data_list = my_splitter_instance.split(processed_data_list)
     
     print(f"Dataset split: Train={len(train_data_list)}, Val={len(val_data_list)}, Test={len(test_data_list)}")
 
@@ -608,3 +605,4 @@ if __name__ == "__main__":
     if config.MODEL_SAVE_DIR.exists():
         shutil.rmtree(config.MODEL_SAVE_DIR)
         print(f"Cleaned up {config.MODEL_SAVE_DIR}")
+
