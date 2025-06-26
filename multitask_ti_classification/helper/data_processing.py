@@ -2,6 +2,10 @@ import torch
 import numpy as np
 from sklearn.preprocessing import StandardScaler, RobustScaler
 from sklearn.model_selection import StratifiedShuffleSplit
+import warnings
+
+# Import config for access to label mappings and helper function
+import helper.config as config 
 
 class ImprovedDataPreprocessor:
     """Improved data preprocessing for better training stability"""
@@ -11,7 +15,10 @@ class ImprovedDataPreprocessor:
         self.fitted = False
         
     def fit_transform(self, dataset):
-        """Fit scalers and transform data"""
+        """
+        Fit scalers on the provided dataset and then transform it.
+        Also calculates and adds the 'combined_label' to each data item.
+        """
         print("Fitting data preprocessors...")
         
         # Collect all features for fitting scalers
@@ -19,12 +26,15 @@ class ImprovedDataPreprocessor:
         all_scalar_features = []
         all_decomp_features = []
         
+        # Data items from MaterialDataset are dicts with tensors (potentially on CPU)
         for data in dataset:
-            if 'asph_features' in data:
+            if 'asph_features' in data and data['asph_features'] is not None and data['asph_features'].numel() > 0:
                 all_asph_features.append(data['asph_features'].numpy())
-            if 'scalar_features' in data:
+            if 'scalar_features' in data and data['scalar_features'] is not None and data['scalar_features'].numel() > 0:
                 all_scalar_features.append(data['scalar_features'].numpy())
-            if 'kspace_physics_features' in data and 'decomposition_features' in data['kspace_physics_features']:
+            if 'kspace_physics_features' in data and 'decomposition_features' in data['kspace_physics_features'] and \
+               data['kspace_physics_features']['decomposition_features'] is not None and \
+               data['kspace_physics_features']['decomposition_features'].numel() > 0:
                 all_decomp_features.append(data['kspace_physics_features']['decomposition_features'].numpy())
         
         if all_asph_features:
@@ -47,14 +57,16 @@ class ImprovedDataPreprocessor:
         return self.transform(dataset)
     
     def transform(self, dataset):
-        """Transform dataset using fitted scalers"""
+        """
+        Transform dataset using fitted scalers and add 'combined_label'.
+        """
         if not self.fitted:
-            raise ValueError("Preprocessor not fitted yet!")
+            raise ValueError("Preprocessor not fitted yet! Call fit_transform first.")
         
         transformed_dataset = []
         
         for data in dataset:
-            transformed_data = data.copy()
+            transformed_data = data.copy() # Make a shallow copy to modify
             
             # Transform ASPH features
             if 'asph_features' in data and 'asph' in self.feature_scalers:
@@ -77,19 +89,30 @@ class ImprovedDataPreprocessor:
                 transformed_data['kspace_physics_features']['decomposition_features'] = torch.FloatTensor(scaled_features.flatten())
             
             # Normalize crystal node features (if they're not already normalized)
-            if 'crystal_graph' in data and hasattr(data['crystal_graph'], 'x'):
+            if 'crystal_graph' in data and hasattr(data['crystal_graph'], 'x') and data['crystal_graph'].x is not None:
                 x = data['crystal_graph'].x
-                if x.std() > 10:  # If features seem unnormalized
+                # Check for standard deviation to avoid normalizing already scaled features or all-zero features
+                if x.numel() > 0 and x.std() > 1e-6: # Only normalize if not all zeros and std is significant
                     x_normalized = (x - x.mean(dim=0)) / (x.std(dim=0) + 1e-8)
                     transformed_data['crystal_graph'].x = x_normalized
             
             # Normalize k-space node features
-            if 'kspace_graph' in data and hasattr(data['kspace_graph'], 'x'):
+            if 'kspace_graph' in data and hasattr(data['kspace_graph'], 'x') and data['kspace_graph'].x is not None:
                 x = data['kspace_graph'].x
-                if x.std() > 10:  # If features seem unnormalized
+                if x.numel() > 0 and x.std() > 1e-6:
                     x_normalized = (x - x.mean(dim=0)) / (x.std(dim=0) + 1e-8)
                     transformed_data['kspace_graph'].x = x_normalized
             
+            # --- NEW: Calculate and add combined_label ---
+            if 'topology_label' in data and 'magnetism_label' in data:
+                topo_int = data['topology_label'].item()
+                mag_int = data['magnetism_label'].item()
+                combined_label_val = config.get_combined_label_from_ints(topo_int, mag_int)
+                transformed_data['combined_label'] = torch.tensor(combined_label_val, dtype=torch.long)
+            else:
+                warnings.warn(f"Missing 'topology_label' or 'magnetism_label' in data item {data.get('jid', 'unknown_jid')}. Cannot create 'combined_label'. Setting to default 0.")
+                transformed_data['combined_label'] = torch.tensor(0, dtype=torch.long) # Default to 0
+
             transformed_dataset.append(transformed_data)
         
         return transformed_dataset
@@ -103,18 +126,17 @@ class StratifiedDataSplitter:
         self.random_state = random_state
     
     def split(self, dataset):
-        """Create stratified train/val/test splits"""
-        
-        # Extract labels for stratification
-        topology_labels = []
-        magnetism_labels = []
-        
-        for data in dataset:
-            topology_labels.append(data['topology_label'].item())
-            magnetism_labels.append(data['magnetism_label'].item())
-        
-        # Create combined labels for stratification
-        combined_labels = [f"{t}_{m}" for t, m in zip(topology_labels, magnetism_labels)]
+        """
+        Create stratified train/val/test splits.
+        Expects 'combined_label' to be present in each item of the dataset.
+        """
+        # Ensure 'combined_label' is present for stratification
+        if not all('combined_label' in d for d in dataset):
+            raise ValueError("All data items must contain 'combined_label' for stratification. "
+                             "Ensure ImprovedDataPreprocessor is configured to add it.")
+
+        # Extract 'combined_label' for stratification
+        combined_labels = [data['combined_label'].item() for data in dataset]
         
         # First split: train+val vs test
         splitter1 = StratifiedShuffleSplit(
@@ -127,7 +149,7 @@ class StratifiedDataSplitter:
         
         # Second split: train vs val
         train_val_labels = [combined_labels[i] for i in train_val_idx]
-        val_size_adjusted = self.val_size / (1 - self.test_size)
+        val_size_adjusted = self.val_size / (1 - self.test_size) # Adjust val size relative to remaining data
         
         splitter2 = StratifiedShuffleSplit(
             n_splits=1, 
@@ -149,3 +171,4 @@ class StratifiedDataSplitter:
         print(f"Dataset split: Train {len(train_dataset)}, Val {len(val_dataset)}, Test {len(test_dataset)}")
         
         return train_dataset, val_dataset, test_dataset
+
