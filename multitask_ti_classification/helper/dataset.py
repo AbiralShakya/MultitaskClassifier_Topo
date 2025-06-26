@@ -392,40 +392,77 @@ class MaterialDataset(Dataset):
         base_decomposition_feature_dim = getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2) 
         return torch.zeros(base_decomposition_feature_dim)
 
-# Custom collate function remains the same, as it stacks the dicts as before.
-def custom_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+# Your existing custom_collate_fn function
+def custom_collate_fn(batch_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Custom collate function for PyGDataLoader to handle a dictionary of inputs.
-    It will batch PyGData objects separately and stack other tensors.
+    It will batch PyGData objects separately, stack other tensors,
+    and dynamically generate the combined_label.
     """
-    if not batch:
+    if not batch_list:
         return {}
 
-    crystal_graphs_batch = torch_geometric.data.Batch.from_data_list([d['crystal_graph'] for d in batch])
-    kspace_graphs_batch = torch_geometric.data.Batch.from_data_list([d['kspace_graph'] for d in batch])
+    # Extract individual components that are directly from MaterialRecord
+    # Note: Labels are now `topology_label` and `magnetism_label`
+    crystal_graphs = [d['crystal_graph'] for d in batch_list]
+    kspace_graphs = [d['kspace_graph'] for d in batch_list]
+    asph_features = torch.stack([d['asph_features'] for d in batch_list])
+    scalar_features = torch.stack([d['scalar_features'] for d in batch_list])
+    topology_labels_batch_individual = [d['topology_label'] for d in batch_list] # Keep as list of tensors for iteration
+    magnetism_labels_batch_individual = [d['magnetism_label'] for d in batch_list] # Keep as list of tensors for iteration
+    jids = [d['jid'] for d in batch_list] # Keep JIDs for debugging if needed
 
-    collated_batch = {
-        'crystal_graph': crystal_graphs_batch,
-        'kspace_graph': kspace_graphs_batch,
-        'asph_features': torch.stack([d['asph_features'] for d in batch]),
-        'scalar_features': torch.stack([d['scalar_features'] for d in batch]),
-        'topology_label': torch.stack([d['topology_label'] for d in batch]),
-        'magnetism_label': torch.stack([d['magnetism_label'] for d in batch]),
-        'jid': [d['jid'] for d in batch]
-    }
+    # --- NEW: Generate combined_label here from individual labels ---
+    combined_labels_list = []
+    for i in range(len(batch_list)):
+        topo_int = topology_labels_batch_individual[i].item() # Get the integer label
+        mag_int = magnetism_labels_batch_individual[i].item() # Get the integer label
+        
+        # Use the new helper from config.py to get the combined label integer
+        combined_label_val = config.get_combined_label_from_ints(topo_int, mag_int)
+        combined_labels_list.append(combined_label_val)
+    
+    # Stack the generated combined labels into a tensor
+    combined_labels_batch = torch.tensor(combined_labels_list, dtype=torch.long)
 
+    # Now, stack the individual topology and magnetism labels into tensors for the batch
+    topology_labels_batch = torch.stack(topology_labels_batch_individual)
+    magnetism_labels_batch = torch.stack(magnetism_labels_batch_individual)
+
+    # For kspace_physics_features, handle the dictionary structure and stack
     kspace_physics_features_collated = defaultdict(list)
-    for d in batch:
+    for d in batch_list:
         for key, tensor in d['kspace_physics_features'].items():
             kspace_physics_features_collated[key].append(tensor)
     
+    # Process each type of physics feature
     for key in kspace_physics_features_collated:
         for i, tensor in enumerate(kspace_physics_features_collated[key]):
             if torch.isnan(tensor).any() or torch.isinf(tensor).any():
-                warnings.warn(f"NaN/Inf detected in kspace_physics_features[{key}] for batch element {i} during collate. Replacing with zeros.")
+                warnings.warn(f"NaN/Inf detected in kspace_physics_features[{key}] for batch element {jids[i]} during collate. Replacing with zeros.")
                 kspace_physics_features_collated[key][i] = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
 
-        kspace_physics_features_collated[key] = torch.stack(kspace_physics_features_collated[key])
-    collated_batch['kspace_physics_features'] = kspace_physics_features_collated
+        # Stack tensors. If original was [dim], stack creates [batch_size, dim].
+        # If original was [1, dim] (e.g., from MaterialRecord), stack creates [batch_size, 1, dim], then squeeze
+        stacked_tensor = torch.stack(kspace_physics_features_collated[key])
+        if stacked_tensor.dim() == 3 and stacked_tensor.shape[1] == 1:
+            kspace_physics_features_collated[key] = stacked_tensor.squeeze(1) # Result: [batch_size, dim]
+        else:
+            kspace_physics_features_collated[key] = stacked_tensor # Result: [batch_size, dim]
 
-    return collated_batch
+
+    # Batch graph data using torch_geometric.data.Batch
+    batched_crystal_graph = torch_geometric.data.Batch.from_data_list(crystal_graphs)
+    batched_kspace_graph = torch_geometric.data.Batch.from_data_list(kspace_graphs)
+
+    return {
+        'crystal_graph': batched_crystal_graph,
+        'kspace_graph': batched_kspace_graph,
+        'asph_features': asph_features,
+        'scalar_features': scalar_features,
+        'kspace_physics_features': kspace_physics_features_collated,
+        'topology_label': topology_labels_batch,
+        'magnetism_label': magnetism_labels_batch,
+        'combined_label': combined_labels_batch, # The dynamically generated combined label
+        'jid': jids 
+    }
