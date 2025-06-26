@@ -239,9 +239,83 @@ SCALAR_TOTAL_DIM = BAND_REP_FEATURE_DIM + len([
     'space_group_number', 'total_magnetization'
 ])
 
+COMBINED_CLASS_MAPPING = {
+    ("Trivial", "NM"): 0,
+    ("Topological Insulator", "NM"): 1,
+    ("Semimetal", "NM"): 2,
+    ("Trivial", "Magnetic"): 3, # This covers FM, AFM, FiM
+    ("Topological Insulator", "Magnetic"): 4,
+    ("Semimetal", "Magnetic"): 5,
+}
+
+NUM_COMBINED_CLASSES = len(set(COMBINED_CLASS_MAPPING.values())) # 6 classes
+
+def get_combined_label(topology_str: str, magnetism_str: str) -> int:
+    """
+    Converts raw topology and magnetism strings into a single combined integer label.
+    Used in data preprocessing.
+    """
+    topo_str_canonical = TOPOLOGY_INT_TO_CANONICAL_STR.get(
+        TOPOLOGY_CLASS_MAPPING.get(topology_str, TOPOLOGY_CLASS_MAPPING["Unknown"]), 
+        "Trivial" # Fallback if direct lookup fails
+    )
+
+    magnetism_str_canonical = "Magnetic" if magnetism_str in ["FM", "AFM", "FiM"] else "NM"
+
+    combined_key = (topo_str_canonical, magnetism_str_canonical)
+    
+    if combined_key not in COMBINED_CLASS_MAPPING:
+        warnings.warn(f"Undefined combined class for {combined_key}. Defaulting to Trivial_NM (0).")
+        return 0 
+    
+    return COMBINED_CLASS_MAPPING[combined_key]
+
+# NEW: Inverse mappings for easy lookup from integer to string
+# Note: "Semimetal" is canonical for both Weyl/Dirac. "Trivial" is canonical for Unknown.
+TOPOLOGY_INT_TO_CANONICAL_STR = {
+    0: "Trivial",
+    1: "Topological Insulator",
+    2: "Semimetal"
+}
+
+# Note: "Magnetic" is canonical for FM, AFM, FiM. "NM" is canonical for UNKNOWN.
+MAGNETISM_INT_TO_CANONICAL_STR = {
+    0: "NM",
+    1: "FM", # These are the *raw* magnetic types that map to "Magnetic" combined type
+    2: "AFM",
+    3: "FiM"
+}
+
+
+# NEW: Helper function to get combined label from integer labels
+def get_combined_label_from_ints(topology_int: int, magnetism_int: int) -> int:
+    """
+    Converts integer topology and magnetism labels into a single combined integer label.
+    Uses inverse mappings to get canonical string representations first.
+    """
+    topo_str_canonical = TOPOLOGY_INT_TO_CANONICAL_STR.get(topology_int, "Trivial")
+
+    # Map the magnetism integer back to a *raw* string to then determine "Magnetic" or "NM"
+    # This is slightly tricky: MAGNETISM_INT_TO_CANONICAL_STR maps 0->NM, 1->FM, etc.
+    # We then use the logic from get_combined_label to group FM, AFM, FiM into "Magnetic"
+    raw_magnetism_str_from_int = MAGNETISM_INT_TO_CANONICAL_STR.get(magnetism_int, "NM")
+    
+    # Now use the existing logic for "Magnetic" vs "NM"
+    magnetism_str_combined_type = "Magnetic" if raw_magnetism_str_from_int in ["FM", "AFM", "FiM"] else "NM"
+
+    combined_key = (topo_str_canonical, magnetism_str_combined_type)
+    
+    if combined_key not in COMBINED_CLASS_MAPPING:
+        warnings.warn(f"Undefined combined class for {combined_key} from ints ({topology_int}, {magnetism_int}). Defaulting to Trivial_NM (0).")
+        return 0 
+    
+    return COMBINED_CLASS_MAPPING[combined_key]
+
 # --- Model Saving ---
 MODEL_SAVE_DIR = PROJECT_ROOT / "saved_models"
 os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+
+
 
 
 # import os

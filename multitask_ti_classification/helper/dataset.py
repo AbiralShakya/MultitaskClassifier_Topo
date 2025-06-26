@@ -392,7 +392,6 @@ class MaterialDataset(Dataset):
         base_decomposition_feature_dim = getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2) 
         return torch.zeros(base_decomposition_feature_dim)
 
-# Your existing custom_collate_fn function
 def custom_collate_fn(batch_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Custom collate function for PyGDataLoader to handle a dictionary of inputs.
