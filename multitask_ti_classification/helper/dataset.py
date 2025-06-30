@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore", ".*is not in the top-level domain.*", UserWarn
 
 class MaterialDataset(Dataset):
     def __init__(self, master_index_path: Union[str, Path], kspace_graphs_base_dir: Union[str, Path],
-                 data_root_dir: Union[str, Path], scaler: Optional[StandardScaler] = None):
+                 data_root_dir: Union[str, Path], dos_fermi_dir: Union[str, Path], scaler: Optional[StandardScaler] = None):
         """
         Args:
             master_index_path: Path to the directory containing individual JSON metadata files.
@@ -43,6 +43,7 @@ class MaterialDataset(Dataset):
         self.metadata_json_dir = Path(master_index_path)
         self.kspace_graphs_base_dir = Path(kspace_graphs_base_dir)
         self.data_root_dir = Path(data_root_dir) # Corrected back to data_root_dir, assuming that was the original variable name.
+        self.dos_fermi_dir = Path(dos_fermi_dir)
 
         if not self.metadata_json_dir.is_dir():
             raise NotADirectoryError(f"master_index_path must be a directory containing JSON files: {self.metadata_json_dir}")
@@ -287,15 +288,55 @@ class MaterialDataset(Dataset):
             warnings.warn(f"Band gap tensor for {jid} has dim {gap_features_tensor.numel()}, expected {config.BAND_GAP_SCALAR_DIM}. Adjusting.")
             gap_features_tensor = torch.zeros(config.BAND_GAP_SCALAR_DIM, dtype=torch.float)
 
-        # DOS Features (placeholder if not directly loaded)
-        # You would replace this with actual loading if you have DOS data files
-        dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Placeholder
-        dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
 
-        # Fermi Surface Features (placeholder if not directly loaded)
-        # You would replace this with actual loading if you have Fermi surface data
-        fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Placeholder
-        fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
+        jid_dos_fermi_sub_dir = self.dos_fermi_dir / jid 
+        dos_file_path = jid_dos_fermi_sub_dir / "dos_data.npy"      
+        fermi_file_path = jid_dos_fermi_sub_dir / "fermi_energy.npy"  
+
+        # --- Load DOS Features ---
+        dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Initialize with zeros as fallback
+        try:
+            if dos_file_path.exists():
+                dos_data = np.load(dos_file_path)
+                dos_features_tensor = torch.tensor(dos_data, dtype=torch.float)
+                dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
+                
+                # IMPORTANT: Ensure the loaded tensor matches the expected dimension.
+                if dos_features_tensor.numel() != config.DOS_FEATURE_DIM:
+                    warnings.warn(f"DOS features for {jid} have dimension {dos_features_tensor.numel()}, expected {config.DOS_FEATURE_DIM}. Resizing or padding to match.")
+                    if dos_features_tensor.numel() < config.DOS_FEATURE_DIM:
+                        padding = torch.zeros(config.DOS_FEATURE_DIM - dos_features_tensor.numel(), dtype=torch.float, device=dos_features_tensor.device)
+                        dos_features_tensor = torch.cat([dos_features_tensor, padding])
+                    else:
+                        dos_features_tensor = dos_features_tensor[:config.DOS_FEATURE_DIM]
+            else:
+                warnings.warn(f"DOS file not found for JID {jid} at {dos_file_path}. Using zeros.")
+        except Exception as e:
+            warnings.warn(f"Error loading DOS features for JID {jid} from {dos_file_path}: {e}. Using zeros.")
+            dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float)
+
+        # --- Load Fermi Surface Features ---
+        fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Initialize with zeros as fallback
+        try:
+            if fermi_file_path.exists():
+                fermi_data = np.load(fermi_file_path)
+                fermi_features_tensor = torch.tensor(fermi_data, dtype=torch.float)
+                fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
+
+                # IMPORTANT: Ensure the loaded tensor matches the expected dimension.
+                if fermi_features_tensor.numel() != config.FERMI_FEATURE_DIM:
+                    warnings.warn(f"Fermi features for {jid} have dimension {fermi_features_tensor.numel()}, expected {config.FERMI_FEATURE_DIM}. Resizing or padding to match.")
+                    if fermi_features_tensor.numel() < config.FERMI_FEATURE_DIM:
+                        padding = torch.zeros(config.FERMI_FEATURE_DIM - fermi_features_tensor.numel(), dtype=torch.float, device=fermi_features_tensor.device)
+                        fermi_features_tensor = torch.cat([fermi_features_tensor, padding])
+                    else:
+                        fermi_features_tensor = fermi_features_tensor[:config.FERMI_FEATURE_DIM]
+            else:
+                warnings.warn(f"Fermi file not found for JID {jid} at {fermi_file_path}. Using zeros.")
+        except Exception as e:
+            warnings.warn(f"Error loading Fermi features for JID {jid} from {fermi_file_path}: {e}. Using zeros.")
+            fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float)
+
 
         # Consolidate kspace_physics_features dictionary for the model
         kspace_physics_features_dict = {
@@ -304,6 +345,30 @@ class MaterialDataset(Dataset):
             'dos_features': dos_features_tensor,
             'fermi_features': fermi_features_tensor
         }
+
+        # jid_dos_fermi_sub_dir = self.dos_fermi_dir / jid
+        # dos_file_path = jid_dos_fermi_sub_dir / "dos_data.npy"      
+        # fermi_file_path = jid_dos_fermi_sub_dir / "fermi_energy.npy"  
+
+        # DOS Features (placeholder if not directly loaded)
+        # You would replace this with actual loading if you have DOS data files
+        # dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Placeholder
+        # dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
+
+
+
+        # # Fermi Surface Features (placeholder if not directly loaded)
+        # # You would replace this with actual loading if you have Fermi surface data
+        # fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Placeholder
+        # fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
+
+        # # Consolidate kspace_physics_features dictionary for the model
+        # kspace_physics_features_dict = {
+        #     'decomposition_features': full_decomposition_features_tensor,
+        #     'gap_features': gap_features_tensor,
+        #     'dos_features': dos_features_tensor,
+        #     'fermi_features': fermi_features_tensor
+        # }
 
 
         # --- 4. Extract Scalar Features (Band Reps + Metadata, NOW EXCLUDING BAND GAP) ---

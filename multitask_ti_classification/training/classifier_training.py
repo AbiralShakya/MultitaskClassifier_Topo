@@ -72,6 +72,7 @@ def train_main_classifier():
         master_index_path=config.MASTER_INDEX_PATH,
         kspace_graphs_base_dir=config.KSPACE_GRAPHS_DIR,
         data_root_dir=config.DATA_DIR,
+        dos_fermi_dir=config.DOS_FERMI_DIR,
         scaler=None
     )
     
@@ -270,7 +271,7 @@ def train_main_classifier():
         model.train()
         total_train_loss = 0
         
-        for batch_idx, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch+1} Training")):
+        for batch_idx, batch in enumerate(train_loader):
             batch['crystal_graph'] = batch['crystal_graph'].to(config.DEVICE)
             batch['kspace_graph'] = batch['kspace_graph'].to(config.DEVICE)
             
@@ -343,7 +344,7 @@ def train_main_classifier():
         all_val_mag_labels = []
 
         with torch.no_grad():
-            for batch_idx, batch in enumerate(tqdm(val_loader, desc=f"Epoch {epoch+1} Validation")):
+            for batch_idx, batch in enumerate(val_loader):
                 batch['crystal_graph'] = batch['crystal_graph'].to(config.DEVICE)
                 batch['kspace_graph'] = batch['kspace_graph'].to(config.DEVICE)
                 for key in ['asph_features', 'scalar_features', 'topology_label', 'magnetism_label', 'combined_label']:

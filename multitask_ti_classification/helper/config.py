@@ -136,6 +136,8 @@ KSPACE_GRAPHS_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulato
 # Path to the master index directory (containing individual JSON metadata files)
 MASTER_INDEX_PATH = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata")
 
+DOS_FERMI_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/pebr_tr_dos_rev5")
+
 # Topology Classification - FIXED MAPPING
 TOPOLOGY_CLASS_MAPPING = {
     "Trivial": 0,           # Trivial metal/insulator (materials not classified as TI or TSM)

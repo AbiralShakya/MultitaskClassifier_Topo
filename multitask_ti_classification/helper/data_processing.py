@@ -30,12 +30,15 @@ class ImprovedDataPreprocessor:
         for data in dataset:
             if 'asph_features' in data and data['asph_features'] is not None and data['asph_features'].numel() > 0:
                 all_asph_features.append(data['asph_features'].numpy())
+            
             if 'scalar_features' in data and data['scalar_features'] is not None and data['scalar_features'].numel() > 0:
                 all_scalar_features.append(data['scalar_features'].numpy())
-            if 'kspace_physics_features' in data and 'decomposition_features' in data['kspace_physics_features'] and \
-               data['kspace_physics_features']['decomposition_features'] is not None and \
-               data['kspace_physics_features']['decomposition_features'].numel() > 0:
-                all_decomp_features.append(data['kspace_physics_features']['decomposition_features'].numpy())
+            
+            # Robustly check for kspace_physics_features and its sub-keys
+            if 'kspace_physics_features' in data and isinstance(data['kspace_physics_features'], dict):
+                decomp_features = data['kspace_physics_features'].get('decomposition_features')
+                if decomp_features is not None and decomp_features.numel() > 0:
+                    all_decomp_features.append(decomp_features.numpy())
         
         if all_asph_features:
             all_asph = np.vstack(all_asph_features)
@@ -88,29 +91,31 @@ class ImprovedDataPreprocessor:
                 scaled_features = self.feature_scalers['decomp'].transform(features.reshape(1, -1))
                 transformed_data['kspace_physics_features']['decomposition_features'] = torch.FloatTensor(scaled_features.flatten())
             
-            # # Normalize crystal node features (if they're not already normalized)
-            # if 'crystal_graph' in data and hasattr(data['crystal_graph'], 'x') and data['crystal_graph'].x is not None:
-            #     x = data['crystal_graph'].x
-            #     # Check for standard deviation to avoid normalizing already scaled features or all-zero features
-            #     if x.numel() > 0 and x.std() > 1e-6: # Only normalize if not all zeros and std is significant
-            #         x_normalized = (x - x.mean(dim=0)) / (x.std(dim=0) + 1e-8)
-            #         transformed_data['crystal_graph'].x = x_normalized
-
-            if x.numel() > 0: # Ensure tensor is not empty
-                x_mean = x.mean(dim=0)
-                x_std = x.std(dim=0, unbiased=False) # Use unbiased=False for n instead of n-1 for std, if it suits your needs
-                x_std_safe = torch.where(x_std == 0, torch.tensor(1.0, device=x_std.device), x_std) # Replace 0 std with 1.0
-                x_normalized = (x - x_mean) / (x_std_safe + 1e-8)
-                transformed_data['crystal_graph'].x = x_normalized
-                 
+            # Normalize crystal node features
+            if 'crystal_graph' in data and hasattr(data['crystal_graph'], 'x') and data['crystal_graph'].x is not None:
+                x = data['crystal_graph'].x # Assign x here
+                if x.numel() > 0: # Ensure tensor is not empty
+                    x_mean = x.mean(dim=0)
+                    x_std = x.std(dim=0, unbiased=True) 
+                    x_std_safe = torch.where(x_std == 0, torch.tensor(1.0, device=x_std.device, dtype=x_std.dtype), x_std) 
+                    x_normalized = (x - x_mean) / x_std_safe
+                    transformed_data['crystal_graph'].x = x_normalized
+                else:
+                    warnings.warn(f"Empty crystal_graph.x for JID {data.get('jid', 'unknown_jid')}. Skipping normalization.")
+            
             # Normalize k-space node features
             if 'kspace_graph' in data and hasattr(data['kspace_graph'], 'x') and data['kspace_graph'].x is not None:
-                x = data['kspace_graph'].x
-                if x.numel() > 0 and x.std() > 1e-6:
-                    x_normalized = (x - x.mean(dim=0)) / (x.std(dim=0) + 1e-8)
+                x = data['kspace_graph'].x # Assign x here
+                if x.numel() > 0:
+                    x_mean = x.mean(dim=0)
+                    x_std = x.std(dim=0, unbiased=True)
+                    x_std_safe = torch.where(x_std == 0, torch.tensor(1.0, device=x_std.device, dtype=x_std.dtype), x_std)
+                    x_normalized = (x - x_mean) / x_std_safe
                     transformed_data['kspace_graph'].x = x_normalized
-            
-            # --- NEW: Calculate and add combined_label ---
+                else:
+                    warnings.warn(f"Empty kspace_graph.x for JID {data.get('jid', 'unknown_jid')}. Skipping normalization.")
+
+            # --- Calculate and add combined_label ---
             if 'topology_label' in data and 'magnetism_label' in data:
                 topo_int = data['topology_label'].item()
                 mag_int = data['magnetism_label'].item()
@@ -118,7 +123,7 @@ class ImprovedDataPreprocessor:
                 transformed_data['combined_label'] = torch.tensor(combined_label_val, dtype=torch.long)
             else:
                 warnings.warn(f"Missing 'topology_label' or 'magnetism_label' in data item {data.get('jid', 'unknown_jid')}. Cannot create 'combined_label'. Setting to default 0.")
-                transformed_data['combined_label'] = torch.tensor(0, dtype=torch.long) # Default to 0
+                transformed_data['combined_label'] = torch.tensor(0, dtype=torch.long)
 
             transformed_dataset.append(transformed_data)
         
@@ -137,10 +142,15 @@ class StratifiedDataSplitter:
         Create stratified train/val/test splits.
         Expects 'combined_label' to be present in each item of the dataset.
         """
+        if not dataset: # Handle empty dataset
+            warnings.warn("Attempted to split an empty dataset. Returning empty lists.")
+            return [], [], []
+
         # Ensure 'combined_label' is present for stratification
+        # It's crucial that ImprovedDataPreprocessor has already added this.
         if not all('combined_label' in d for d in dataset):
             raise ValueError("All data items must contain 'combined_label' for stratification. "
-                             "Ensure ImprovedDataPreprocessor is configured to add it.")
+                             "Ensure ImprovedDataPreprocessor is configured to add it (or check for missing labels in raw data).")
 
         # Extract 'combined_label' for stratification
         combined_labels = [data['combined_label'].item() for data in dataset]
