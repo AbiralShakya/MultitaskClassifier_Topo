@@ -35,7 +35,8 @@ class EGNNLayer(nn.Module): # Reverted to standard e3nn.nn.Module and its expect
         )
 
         # --- Correct Gate initialization for messages ---
-        tp_out_irreps_msg = self.tp_messages_ij.irreps_out
+        # Use the hidden_irreps directly since tp_messages_ij.irreps_out is not accessible as expected
+        tp_out_irreps_msg = self.hidden_irreps
         
         scalars_msg = []
         gated_msg = []
@@ -535,6 +536,7 @@ class MultiModalMaterialClassifier(nn.Module):
         # ASPH Encoder
         self.asph_encoder = PHTokenEncoder(
             input_dim=asph_feature_dim,
+            hidden_dims=asph_feature_dim,
             out_channels=latent_dim_asph
         )
         

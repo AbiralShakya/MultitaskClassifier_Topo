@@ -1009,8 +1009,8 @@ def train_main_classifier():
         master_index_path=config.MASTER_INDEX_PATH,
         kspace_graphs_base_dir=config.KSPACE_GRAPHS_DIR,
         data_root_dir=config.DATA_DIR,
-        dos_fermi_dir=config.DOS_FERMI_DIR, # Pass the new directory
-        scaler=feature_scalers # Pass the dictionary of scalers
+        dos_fermi_dir=config.DOS_FERMI_DIR, 
+        scaler=feature_scalers 
     )
     print("Final dataset re-initialized with fitted scalers.")
 
