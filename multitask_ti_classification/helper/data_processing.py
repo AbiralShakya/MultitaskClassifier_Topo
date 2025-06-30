@@ -94,14 +94,31 @@ class ImprovedDataPreprocessor:
             # Normalize crystal node features
             if 'crystal_graph' in data and hasattr(data['crystal_graph'], 'x') and data['crystal_graph'].x is not None:
                 x = data['crystal_graph'].x # Assign x here
+                
                 if x.numel() > 0: # Ensure tensor is not empty
                     x_mean = x.mean(dim=0)
-                    x_std = x.std(dim=0, unbiased=True) 
-                    x_std_safe = torch.where(x_std == 0, torch.tensor(1.0, device=x_std.device, dtype=x_std.dtype), x_std) 
-                    x_normalized = (x - x_mean) / x_std_safe
+
+                    # --- Handle standard deviation based on the number of nodes (samples) ---
+                    if x.shape[0] == 1:
+                        # If there's only one node in the graph, unbiased standard deviation is undefined (NaN).
+                        # In this case, we typically don't scale the feature, so we treat std as 1.0.
+                        x_std_effective = torch.ones_like(x_mean)
+                    else:
+                        # For multiple nodes, compute standard deviation
+                        x_std = x.std(dim=0, unbiased=True)
+                        
+                        # Handle cases where std is exactly 0 (i.e., all feature values are constant for that dimension)
+                        x_std_effective = torch.where(
+                            x_std == 0,
+                            torch.tensor(1.0, device=x_std.device, dtype=x_std.dtype),
+                            x_std
+                        )
+                    
+                    # Apply normalization using the safe standard deviation and an epsilon
+                    x_normalized = (x - x_mean) / (x_std_effective + config.EPSILON_FOR_STD_DIVISION)
                     transformed_data['crystal_graph'].x = x_normalized
-                else:
-                    warnings.warn(f"Empty crystal_graph.x for JID {data.get('jid', 'unknown_jid')}. Skipping normalization.")
+            else:
+                warnings.warn(f"Empty crystal_graph.x for JID {data.get('jid', 'unknown_jid')}. Skipping normalization.")
             
             # Normalize k-space node features
             if 'kspace_graph' in data and hasattr(data['kspace_graph'], 'x') and data['kspace_graph'].x is not None:

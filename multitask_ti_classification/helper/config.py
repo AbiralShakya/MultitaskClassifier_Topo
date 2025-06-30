@@ -219,6 +219,8 @@ BASE_DECOMPOSITION_FEATURE_DIM = 2
 ALL_POSSIBLE_IRREPS = [] 
 MAX_DECOMPOSITION_INDICES_LEN = 100
 
+EPSILON_FOR_STD_DIVISION = 1e-8
+
 try:
     with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
         ALL_POSSIBLE_IRREPS = pickle.load(fp)

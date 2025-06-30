@@ -239,6 +239,7 @@ class RealSpaceEGNNEncoder(nn.Module):
         # Return as regular tensor (extract array from IrrepsArray)
         return output_e3nn.array
 
+
 class KSpaceTransformerGNNEncoder(nn.Module):
     """
     Graph Transformer (TransformerConv) encoder for k-space topology graphs.
@@ -251,27 +252,17 @@ class KSpaceTransformerGNNEncoder(nn.Module):
         self.layers = nn.ModuleList()
         self.bns = nn.ModuleList()
 
-        current_in_channels = hidden_dim # Input channels for the first layer
-
         for i in range(n_layers):
-            out_channels_per_head = hidden_dim # Keep per-head dimension consistent
-
             self.layers.append(TransformerConv(
-                in_channels=current_in_channels, # Use dynamic in_channels
-                out_channels=out_channels_per_head,
+                in_channels=hidden_dim,
+                out_channels=hidden_dim, # Output per head is hidden_dim
                 heads=num_heads,
                 dropout=config.DROPOUT_RATE,
                 beta=True
             ))
-            # BatchNorm1d should match total output features of TransformerConv (out_channels_per_head * num_heads)
-            self.bns.append(nn.BatchNorm1d(out_channels_per_head * num_heads)) # Corrected
+            # FIX: BatchNorm1d should match total output features of TransformerConv (hidden_dim * num_heads)
+            self.bns.append(nn.BatchNorm1d(hidden_dim * num_heads)) # Corrected
             
-            # Update current_in_channels for the next layer
-            current_in_channels = out_channels_per_head * num_heads
-
-        # Add a final linear layer to project to the desired `out_channels` (LATENT_DIM_GNN)
-        self.final_projection = nn.Linear(current_in_channels, out_channels)
-
     def forward(self, data: PyGData) -> torch.Tensor:
         x, edge_index, batch = data.x, data.edge_index, data.batch
         
@@ -283,10 +274,7 @@ class KSpaceTransformerGNNEncoder(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)
 
-        pooled_x = global_mean_pool(x, batch)
-        final_embedding = self.final_projection(pooled_x) # Apply final projection
-        
-        return final_embedding
+        return global_mean_pool(x, batch)
 
 # --- 3. ASPH Encoder ---
 
@@ -485,13 +473,8 @@ class SimplifiedCrystalEncoder(nn.Module):
 class MultiModalMaterialClassifier(nn.Module):
     """
     Multi-modal, multi-task classifier for materials.
-    Combines Real-space (TopologicalCrystalEncoder), K-space GNN, ASPH, Scalar,
-    and K-space Physics features.
-    
-    Predicts:
-        1. Combined Class: 6 classes (Primary)
-        2. Topology: 3 classes (Auxiliary)
-        3. Magnetism: 4 classes (Auxiliary)
+    Combines Real-space (TopologicalCrystalEncoder), K-space (TransformerGNN),
+    ASPH, Scalar, and Enhanced K-space Physics features.
     """
     def __init__(
         self,
@@ -499,159 +482,146 @@ class MultiModalMaterialClassifier(nn.Module):
         kspace_node_feature_dim: int,
         asph_feature_dim: int,
         scalar_feature_dim: int,
-        decomposition_feature_dim: int,
+        decomposition_feature_dim: int, # From config for EnhancedKSpacePhysicsFeatures
         
-        # NEW: Output dimensions for each classification task
-        num_topology_classes: int,   # 3
-        num_magnetism_classes: int,  # 4
-        num_combined_classes: int,   # 6 (Primary task)
+        num_topology_classes: int = config.NUM_TOPOLOGY_CLASSES, # 3 classes
+        num_magnetism_classes: int = config.NUM_MAGNETISM_CLASSES, # 4 classes
+        num_combined_classes: int = config.NUM_COMBINED_CLASSES, # 6 classes
         
-        # Encoder specific params (pulled from config for default values if not provided)
-        # Note: egnn_hidden_irreps_str, egnn_num_layers, egnn_radius are for RealSpaceEGNNEncoder,
-        # but you are now using TopologicalCrystalEncoder.
-        egnn_hidden_irreps_str: str = "64x0e + 32x1o + 16x2e", # Keeping as placeholder if still in config
-        egnn_num_layers: int = 6, # Keeping as placeholder
-        egnn_radius: float = 5.0, # Keeping as placeholder
-        
+        # Encoder specific params for TopologicalCrystalEncoder
+        crystal_encoder_hidden_dim: int = config.crystal_encoder_hidden_dim, # From config
+        crystal_encoder_num_layers: int = config.crystal_encoder_num_layers, # From config
+        crystal_encoder_output_dim: int = config.crystal_encoder_output_dim, # From config
+        crystal_encoder_radius: float = config.crystal_encoder_radius, # From config
+        crystal_encoder_num_scales: int = config.crystal_encoder_num_scales, # From config
+        crystal_encoder_use_topological_features: bool = config.crystal_encoder_use_topological_features, # From config
+
         kspace_gnn_hidden_channels: int = config.GNN_HIDDEN_CHANNELS,
         kspace_gnn_num_layers: int = config.GNN_NUM_LAYERS,
-        kspace_gnn_num_heads: int = config.KSPACE_GNN_NUM_HEADS,
+        kspace_gnn_num_heads: int = config.KSPACE_GNN_NUM_HEADS, 
         
         ffnn_hidden_dims_asph: List[int] = config.FFNN_HIDDEN_DIMS_ASPH,
         ffnn_hidden_dims_scalar: List[int] = config.FFNN_HIDDEN_DIMS_SCALAR,
         
-        # Shared latent dimensions (encoder output dimensions)
-        latent_dim_gnn: int = config.LATENT_DIM_GNN,           # PhysicsInformedKSpaceEncoder output
-        latent_dim_asph: int = config.LATENT_DIM_ASPH,         # PHTokenEncoder output
-        latent_dim_other_ffnn: int = config.LATENT_DIM_OTHER_FFNN, # ScalarEncoder and EnhancedKSpacePhysicsFeatures output
+        # Shared fusion params
+        latent_dim_gnn: int = config.LATENT_DIM_GNN,
+        latent_dim_asph: int = config.LATENT_DIM_ASPH,
+        latent_dim_other_ffnn: int = config.LATENT_DIM_OTHER_FFNN, # For scalar and kspace_physics features
         
-        fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS, # Fusion network hidden layers
-
-        # TopologicalCrystalEncoder specific parameters (from config)
-        crystal_encoder_hidden_dim: int = config.crystal_encoder_hidden_dim, 
-        crystal_encoder_num_layers: int = config.crystal_encoder_num_layers,
-        crystal_encoder_output_dim: int = config.crystal_encoder_output_dim, # Main embedding output dimension
-        crystal_encoder_radius: float = config.crystal_encoder_radius,
-        crystal_encoder_num_scales: int = config.crystal_encoder_num_scales,
-        crystal_encoder_use_topological_features: bool = True # Crucial for topological regularization
+        fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
     ):
         super().__init__()
-        
-        # --- Encoders ---
-        # 1. TopologicalCrystalEncoder (Real-space structure and topological features)
-        # This encoder is expected to return (main_embedding, optional_topo_logits, extracted_topo_features_tensor)
+
+        # Crystal Encoder (now using TopologicalCrystalEncoder)
         self.crystal_encoder = TopologicalCrystalEncoder(
             node_feature_dim=crystal_node_feature_dim,
             hidden_dim=crystal_encoder_hidden_dim,
             num_layers=crystal_encoder_num_layers,
-            output_dim=crystal_encoder_output_dim, 
+            output_dim=crystal_encoder_output_dim, # This is the primary embedding dimension
             radius=crystal_encoder_radius,
             num_scales=crystal_encoder_num_scales,
             use_topological_features=crystal_encoder_use_topological_features
         )
-
-        # 2. PhysicsInformedKSpaceEncoder (K-space graph data)
-        self.kspace_encoder = PhysicsInformedKSpaceEncoder(
+        
+        # K-space Graph Encoder (Transformer-based GNN)
+        self.kspace_encoder = KSpaceTransformerGNNEncoder(
             node_feature_dim=kspace_node_feature_dim,
             hidden_dim=kspace_gnn_hidden_channels,
-            num_layers=kspace_gnn_num_layers, 
-            output_dim=latent_dim_gnn 
+            out_channels=latent_dim_gnn, # Should match LATENT_DIM_GNN
+            n_layers=kspace_gnn_num_layers,
+            num_heads=kspace_gnn_num_heads
         )
-
-        # 3. PHTokenEncoder (ASPH features)
+        
+        # ASPH Encoder
         self.asph_encoder = PHTokenEncoder(
             input_dim=asph_feature_dim,
-            hidden_dims=ffnn_hidden_dims_asph, 
             out_channels=latent_dim_asph
         )
-
-        # 4. ScalarFeatureEncoder (Material scalar properties)
+        
+        # Scalar Features Encoder
         self.scalar_encoder = ScalarFeatureEncoder(
             input_dim=scalar_feature_dim,
             hidden_dims=ffnn_hidden_dims_scalar,
             out_channels=latent_dim_other_ffnn
         )
 
-        # 5. EnhancedKSpacePhysicsFeatures (Physics-informed features like band gap, DOS, Fermi energy)
-        self.decomposition_encoder = EnhancedKSpacePhysicsFeatures(
+        # Enhanced K-space Physics Features Encoder (replaces DecompositionFeatureEncoder)
+        self.enhanced_kspace_physics_encoder = EnhancedKSpacePhysicsFeatures(
             decomposition_dim=decomposition_feature_dim,
             gap_features_dim=config.BAND_GAP_SCALAR_DIM,
             dos_features_dim=config.DOS_FEATURE_DIM,
             fermi_features_dim=config.FERMI_FEATURE_DIM,
-            output_dim=latent_dim_other_ffnn 
+            output_dim=latent_dim_other_ffnn # Output dim for combined physics features
         )
 
-        # --- Fusion Network Setup ---
-        # Calculate total_fused_dim based on the *actual output dimensions* of each encoder
-        total_fused_dim = (
-            crystal_encoder_output_dim +      # From TopologicalCrystalEncoder (main embedding)
-            latent_dim_gnn +                  # From PhysicsInformedKSpaceEncoder
-            latent_dim_asph +                 # From PHTokenEncoder
-            latent_dim_other_ffnn +           # From ScalarFeatureEncoder
-            latent_dim_other_ffnn             # From EnhancedKSpacePhysicsFeatures
-        )
-        
-        print(f"MultiModalMaterialClassifier: Calculated total_fused_dim for fusion network input: {total_fused_dim}")
+        # Calculate total fused dimension
+        # Crystal Encoder: crystal_encoder_output_dim (e.g., 128)
+        # KSpace GNN: latent_dim_gnn (e.g., 128)
+        # ASPH: latent_dim_asph (e.g., 3115) - this seems very large for a latent dim
+        # Scalar: latent_dim_other_ffnn (e.g., 64)
+        # Enhanced K-space Physics: latent_dim_other_ffnn (e.g., 64)
+
+        # If latent_dim_asph is indeed 3115, it will dominate the fusion dimension.
+        # Let's adjust for this based on your config.
+        # total_fused_dim = (latent_dim_gnn * 2) + latent_dim_asph + (latent_dim_other_ffnn * 2)
+        # Assuming crystal_encoder_output_dim is also what you want for one of the GNN latent dims.
+        total_fused_dim = crystal_encoder_output_dim + latent_dim_gnn + \
+                          latent_dim_asph + latent_dim_other_ffnn + latent_dim_other_ffnn 
+
 
         fusion_layers = []
         in_dim_fusion = total_fused_dim
         for h_dim in fusion_hidden_dims:
             fusion_layers.append(nn.Linear(in_dim_fusion, h_dim))
             fusion_layers.append(nn.BatchNorm1d(h_dim))
-            fusion_layers.append(nn.ReLU()) # You can use nn.SiLU() if preferred
+            fusion_layers.append(nn.ReLU())
             fusion_layers.append(nn.Dropout(p=config.DROPOUT_RATE))
             in_dim_fusion = h_dim 
         self.fusion_network = nn.Sequential(*fusion_layers)
 
-        # --- Multiple Prediction Heads ---
-        # All heads take 'in_dim_fusion' (the output of the fusion network) as input
-        self.combined_head = nn.Linear(in_dim_fusion, num_combined_classes) # Primary 6-class head
-        self.topology_head_aux = nn.Linear(in_dim_fusion, num_topology_classes) # Auxiliary 3-class topology head
-        self.magnetism_head_aux = nn.Linear(in_dim_fusion, num_magnetism_classes) # Auxiliary 4-class magnetism head
+        # Output heads for each task
+        self.combined_head = nn.Linear(in_dim_fusion, num_combined_classes) # New 6-class head
+        self.topology_head_aux = nn.Linear(in_dim_fusion, num_topology_classes) # Auxiliary 3-class topology
+        self.magnetism_head_aux = nn.Linear(in_dim_fusion, num_magnetism_classes) # Auxiliary 4-class magnetism
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        # --- Encoder Forward Passes ---
-        # Crystal Encoder: expects (graph_data, return_topological_logits=bool)
-        # Returns (main_output, topo_logits_if_requested, extracted_topo_features_tensor)
-        crystal_encoder_output = self.crystal_encoder(inputs['crystal_graph'], return_topological_logits=True) 
-        crystal_emb = crystal_encoder_output[0] # Main embedding for fusion
-        extracted_topo_features = crystal_encoder_output[2] # For topological regularization loss
-
+        # Crystal encoder now returns main embedding, auxiliary topology logits, and raw topological features
+        crystal_emb, topo_logits_aux, extracted_topo_features = \
+            self.crystal_encoder(inputs['crystal_graph'], return_topological_logits=True)
+        
         kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
         asph_emb = self.asph_encoder(inputs['asph_features'])
         scalar_emb = self.scalar_encoder(inputs['scalar_features'])
         
-        # Ensure kspace_physics_features dict always has the expected keys, even if with zero tensors
-        decomposition_emb = self.decomposition_encoder(
+        # Pass different components of kspace_physics_features to the enhanced encoder
+        enhanced_kspace_physics_emb = self.enhanced_kspace_physics_encoder(
             decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
-            gap_features=inputs['kspace_physics_features'].get('gap_features'), # Use .get() for safety
+            gap_features=inputs['kspace_physics_features'].get('gap_features'),
             dos_features=inputs['kspace_physics_features'].get('dos_features'),
             fermi_features=inputs['kspace_physics_features'].get('fermi_features')
-        ) 
-        
-        # --- Concatenate All Embeddings for Fusion ---
+        )
+
+        # Concatenate all embeddings for the fusion network
         combined_emb = torch.cat([
             crystal_emb, 
             kspace_emb, 
             asph_emb, 
             scalar_emb, 
-            decomposition_emb
+            enhanced_kspace_physics_emb
         ], dim=-1)
 
-        # --- Shared Fusion Network ---
         fused_output = self.fusion_network(combined_emb)
 
-        # --- Task-Specific Prediction Heads ---
-        combined_logits = self.combined_head(fused_output)       # Primary 6-class output
-        topology_logits_aux = self.topology_head_aux(fused_output) # Auxiliary 3-class topology output
-        magnetism_logits_aux = self.magnetism_head_aux(fused_output) # Auxiliary 4-class magnetism output
+        # Task-specific logits
+        combined_logits = self.combined_head(fused_output)
+        # topo_logits_aux is already returned by crystal_encoder if return_topological_logits=True
+        magnetism_logits_aux = self.magnetism_head_aux(fused_output)
 
-        # --- Return all necessary outputs for loss calculation ---
         return {
             'combined_logits': combined_logits,
-            'topology_logits_aux': topology_logits_aux,
+            'topology_logits_aux': topo_logits_aux, # Auxiliary topology logits from crystal encoder
             'magnetism_logits_aux': magnetism_logits_aux,
-            'topological_features': extracted_topo_features # For topological regularization loss
+            'extracted_topo_features': extracted_topo_features # Raw topological features for EnhancedTopologicalLoss
         }
 
 # class MultiModalMaterialClassifier(nn.Module):
