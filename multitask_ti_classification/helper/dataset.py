@@ -310,7 +310,8 @@ class MaterialDataset(Dataset):
                     else:
                         dos_features_tensor = dos_features_tensor[:config.DOS_FEATURE_DIM]
             else:
-                warnings.warn(f"DOS file not found for JID {jid} at {dos_file_path}. Using zeros.")
+                #warnings.warn(f"DOS file not found for JID {jid} at {dos_file_path}. Using zeros.")
+                pass
         except Exception as e:
             warnings.warn(f"Error loading DOS features for JID {jid} from {dos_file_path}: {e}. Using zeros.")
             dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float)
@@ -332,7 +333,8 @@ class MaterialDataset(Dataset):
                     else:
                         fermi_features_tensor = fermi_features_tensor[:config.FERMI_FEATURE_DIM]
             else:
-                warnings.warn(f"Fermi file not found for JID {jid} at {fermi_file_path}. Using zeros.")
+              #  warnings.warn(f"Fermi file not found for JID {jid} at {fermi_file_path}. Using zeros.")
+              pass
         except Exception as e:
             warnings.warn(f"Error loading Fermi features for JID {jid} from {fermi_file_path}: {e}. Using zeros.")
             fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float)
