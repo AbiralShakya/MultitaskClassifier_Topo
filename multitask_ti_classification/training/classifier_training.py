@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from torch_geometric.data import Batch
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
@@ -45,6 +45,26 @@ def custom_collate_fn(batch):
     
     return batched_crystal_graph, asph_features, batched_kspace_graph, batched_kspace_physics, labels
 
+# --- Focal Loss for handling class imbalance ---
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        
+    def forward(self, inputs, targets):
+        ce_loss = nn.functional.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1-pt)**self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
 # --- Metrics ---
 def compute_metrics(predictions, targets, num_classes, task_name, class_names=None):
     preds_np = predictions.cpu().numpy()
@@ -70,6 +90,21 @@ def train():
         data_root_dir=config.DATA_DIR,
         dos_fermi_dir=config.DOS_FERMI_DIR
     )
+    
+    # Get all labels for computing class weights and sampler
+    all_labels = []
+    for i in range(len(full_dataset)):
+        _, _, _, _, label = full_dataset[i]
+        all_labels.append(label.item())
+    all_labels = np.array(all_labels, dtype=np.int64)
+    
+    # Compute class weights for aggressive oversampling
+    class_counts = np.bincount(all_labels)
+    class_weights = 1.0 / class_counts
+    
+    # Create sample weights for WeightedRandomSampler
+    sample_weights = class_weights[all_labels]
+    
     indices = list(range(len(full_dataset)))
     random.shuffle(indices)
     train_split = int(0.8 * len(indices))
@@ -77,10 +112,21 @@ def train():
     train_indices = indices[:train_split]
     val_indices = indices[train_split:val_split]
     test_indices = indices[val_split:]
+    
     train_dataset = torch.utils.data.Subset(full_dataset, train_indices)
     val_dataset = torch.utils.data.Subset(full_dataset, val_indices)
     test_dataset = torch.utils.data.Subset(full_dataset, test_indices)
-    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, collate_fn=custom_collate_fn)
+    
+    # Create weighted sampler for training set
+    train_labels = [all_labels[i] for i in train_indices]
+    train_sample_weights = class_weights[train_labels].tolist()
+    train_sampler = WeightedRandomSampler(
+        weights=train_sample_weights,
+        num_samples=len(train_dataset),
+        replacement=True
+    )
+    
+    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, sampler=train_sampler, num_workers=config.NUM_WORKERS, collate_fn=custom_collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, collate_fn=custom_collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, collate_fn=custom_collate_fn)
 
@@ -95,7 +141,10 @@ def train():
     ).to(config.DEVICE)
     optimizer = optim.Adam(model.parameters(), lr=config.LEARNING_RATE)
     scheduler = MultiStepLR(optimizer, milestones=[30, 40], gamma=0.1)
-    criterion = nn.CrossEntropyLoss()
+    
+    # Use CrossEntropyLoss with class weights for better handling of class imbalance
+    class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(config.DEVICE)
+    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
 
     for epoch in range(config.NUM_EPOCHS):
         model.train()
@@ -109,11 +158,23 @@ def train():
                 kspace_physics_features[k] = kspace_physics_features[k].to(config.DEVICE)
             label = label.to(config.DEVICE)
             optimizer.zero_grad()
-            logits = model(crystal_graph, asph_features, kspace_graph, kspace_physics_features)
-            loss = criterion(logits, label)
-            loss.backward()
+            
+            # Get all logits from the improved model
+            main_logits, cgcnn_logits, asph_logits, kspace_logits = model(crystal_graph, asph_features, kspace_graph, kspace_physics_features)
+            
+            # Compute losses for each modality with better weighting
+            main_loss = criterion(main_logits, label)
+            cgcnn_loss = criterion(cgcnn_logits, label)
+            asph_loss = criterion(asph_logits, label)
+            kspace_loss = criterion(kspace_logits, label)
+            
+            # Progressive auxiliary loss weighting (reduce over time)
+            aux_weight = max(0.1, 0.5 * (1 - epoch / config.NUM_EPOCHS))
+            total_batch_loss = main_loss + aux_weight * (cgcnn_loss + asph_loss + kspace_loss)
+            
+            total_batch_loss.backward()
             optimizer.step()
-            total_loss += loss.item()
+            total_loss += total_batch_loss.item()
         scheduler.step()
         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Train Loss: {total_loss/len(train_loader):.4f}")
 
@@ -130,8 +191,10 @@ def train():
                 for k in kspace_physics_features:
                     kspace_physics_features[k] = kspace_physics_features[k].to(config.DEVICE)
                 label = label.to(config.DEVICE)
-                logits = model(crystal_graph, asph_features, kspace_graph, kspace_physics_features)
-                preds = torch.argmax(logits, dim=1)
+                
+                # Get main logits for validation
+                main_logits, _, _, _ = model(crystal_graph, asph_features, kspace_graph, kspace_physics_features)
+                preds = torch.argmax(main_logits, dim=1)
                 all_preds.append(preds)
                 all_targets.append(label)
         all_preds = torch.cat(all_preds)
@@ -152,8 +215,10 @@ def train():
             for k in kspace_physics_features:
                 kspace_physics_features[k] = kspace_physics_features[k].to(config.DEVICE)
             label = label.to(config.DEVICE)
-            logits = model(crystal_graph, asph_features, kspace_graph, kspace_physics_features)
-            preds = torch.argmax(logits, dim=1)
+            
+            # Get main logits for test evaluation
+            main_logits, _, _, _ = model(crystal_graph, asph_features, kspace_graph, kspace_physics_features)
+            preds = torch.argmax(main_logits, dim=1)
             all_preds.append(preds)
             all_targets.append(label)
     all_preds = torch.cat(all_preds)
