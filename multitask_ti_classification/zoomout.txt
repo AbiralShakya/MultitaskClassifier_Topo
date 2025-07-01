@@ -3,3 +3,6 @@ magnetism classifier
 
 
 TI vs TSM on connectivity graphs outlined in 'graph theory for topological quantum chemistry' paper be Jen Cano et. al. 
+
+
+good paper : https://arxiv.org/pdf/1805.10503

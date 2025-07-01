@@ -1,0 +1,38 @@
+{
+  "paoflow_settings": {
+    "berry_curvature": {
+      "ngrid": [80, 80, 80],
+      "smearing": 0.05,
+      "fermi_energy": "auto",
+      "bands_range": "auto",
+      "output_format": "json"
+    },
+    "anomalous_hall": {
+      "compute_ahc": true,
+      "fermi_energy_range": [-5.0, 5.0],
+      "fermi_energy_points": 100
+    },
+    "chern_number": {
+      "compute_chern": true,
+      "k_slice": "auto"
+    }
+  },
+  "wanniertools_settings": {
+    "berry_curvature": {
+      "berry_flag": true,
+      "berry_path": "0 0 0  0.5 0 0 30",
+      "berry_kmesh": [80, 80, 80],
+      "output_file": "berry.dat"
+    },
+    "chern_number": {
+      "chern_flag": true,
+      "chern_kmesh": [80, 80, 80]
+    }
+  },
+  "integration_settings": {
+    "output_format": "numpy",
+    "normalize_berry_curvature": true,
+    "sum_over_bands": true,
+    "fermi_energy_cutoff": 0.1
+  }
+} 

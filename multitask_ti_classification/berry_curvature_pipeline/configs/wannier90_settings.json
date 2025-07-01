@@ -1,0 +1,43 @@
+{
+  "wannier90_settings": {
+    "general": {
+      "num_wann": "auto",
+      "num_proj": "auto",
+      "spinors": true,
+      "bands_plot": false,
+      "dis_froz_max": 10.0,
+      "dis_win_max": 15.0,
+      "dis_num_iter": 1000,
+      "num_iter": 1000
+    },
+    "kpoint_settings": {
+      "kmesh": [8, 8, 8],
+      "gamma_centered": true
+    },
+    "projection_settings": {
+      "auto_projections": true,
+      "exclude_bands": [],
+      "frozen_min": 0,
+      "frozen_max": "auto"
+    },
+    "output_settings": {
+      "write_hr": true,
+      "write_xyz": true,
+      "write_hr_plot": false,
+      "write_hr_dat": false
+    },
+    "convergence_settings": {
+      "conv_tol": 1e-10,
+      "conv_window": 3,
+      "conv_no_dis_win": false
+    }
+  },
+  "vasp2wannier90_settings": {
+    "write_amn": true,
+    "write_mmn": true,
+    "write_eig": true,
+    "write_unk": false,
+    "write_uhu": false,
+    "write_uIu": false
+  }
+} 

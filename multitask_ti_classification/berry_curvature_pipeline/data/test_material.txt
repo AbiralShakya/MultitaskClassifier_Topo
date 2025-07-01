@@ -1,0 +1,4 @@
+# Test material for quick pipeline validation
+# Choose a simple, well-studied material
+
+mp-149    # Silicon (Si) - simple, fast to compute, well-documented 

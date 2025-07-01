@@ -1,0 +1,14 @@
+# Example material list for Berry curvature computation
+# Format: One MP ID per line
+# Lines starting with # are comments
+
+# Topological insulators
+mp-2534    # Bi2Se3
+mp-10734   # Bi2Te3
+mp-1000    # Graphene-like material
+
+# Weyl semimetals
+mp-149     # Silicon (for testing)
+
+# Add more materials as needed
+# mp-XXXXX  # Material name/description 

@@ -173,269 +173,16 @@ class MaterialDataset(Dataset):
             warnings.warn(f"Could not load ASPH features for JID {jid} from {asph_features_path}: {e}. Returning zeros.")
             asph_features = torch.zeros(getattr(config, 'ASPH_FEATURE_DIM', 3115), dtype=torch.float)
 
-
-        # --- 3. Load K-space Graph and related Physics Features ---
-        sg_number = row['space_group_number'] 
-        kspace_sg_folder = self.kspace_graphs_base_dir / f"SG_{str(int(sg_number)).zfill(3)}"
-
-        # Load kspace_graph.pt
-        kspace_graph_path = kspace_sg_folder / 'kspace_graph.pt'
-        kspace_graph = None
-        try:
-            # Assuming kspace_graph.pt might contain pos and symmetry_labels
-            kspace_graph = torch.load(kspace_graph_path)
-            kspace_graph.x = self._check_and_handle_nan_inf(kspace_graph.x, f"kspace_graph.x", jid)
-            if hasattr(kspace_graph, 'pos') and kspace_graph.pos is not None:
-                kspace_graph.pos = self._check_and_handle_nan_inf(kspace_graph.pos, f"kspace_graph.pos", jid)
-            if hasattr(kspace_graph, 'edge_attr') and kspace_graph.edge_attr is not None:
-                 kspace_graph.edge_attr = self._check_and_handle_nan_inf(kspace_graph.edge_attr, f"kspace_graph.edge_attr", jid)
-            if hasattr(kspace_graph, 'u') and kspace_graph.u is not None: # global features
-                 kspace_graph.u = self._check_and_handle_nan_inf(kspace_graph.u, f"kspace_graph.u", jid)
-            # Add symmetry_labels if present in the kspace_graph object itself or another source
-            # For now, assuming symmetry_labels might be an attribute of PyGData if provided by your graph builder
-            if not hasattr(kspace_graph, 'symmetry_labels'):
-                kspace_graph.symmetry_labels = None # Explicitly set to None if not loaded
-
-        except Exception as e:
-            warnings.warn(f"Could not load k-space graph for SG {sg_number} (JID: {jid}) from {kspace_graph_path}: {e}. Returning dummy graph.")
-            kspace_graph = self._generate_dummy_kspace_graph()
-            kspace_graph.pos = torch.zeros((kspace_graph.num_nodes if hasattr(kspace_graph, 'num_nodes') else 5), 3, dtype=torch.float) # Ensure dummy has pos
-            kspace_graph.symmetry_labels = None
-
-
-        # Load base physics_features.pt (decomposition features)
-        base_physics_features_path = kspace_sg_folder / 'physics_features.pt'
-        base_decomposition_features_tensor = None
-        try:
-            loaded_data = torch.load(base_physics_features_path)
-            if isinstance(loaded_data, dict) and 'decomposition_features' in loaded_data:
-                base_decomposition_features_tensor = loaded_data['decomposition_features']
-            elif isinstance(loaded_data, torch.Tensor):
-                base_decomposition_features_tensor = loaded_data
+        # Apply scaling to ASPH features
+        if self.scaler and 'asph' in self.scaler:
+            if asph_features.ndim == 1:
+                asph_features_np = asph_features.unsqueeze(0).cpu().numpy()
+                scaled_asph_features_np = self.scaler['asph'].transform(asph_features_np)
+                asph_features = torch.tensor(scaled_asph_features_np.squeeze(0), dtype=torch.float)
             else:
-                warnings.warn(f"Unexpected data type in {base_physics_features_path} for JID {jid}. Expected dict or tensor.")
-                base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32)
-
-            base_decomposition_features_tensor = self._check_and_handle_nan_inf(base_decomposition_features_tensor, f"base_decomposition_features", jid)
-            
-            if base_decomposition_features_tensor.ndim == 0:
-                base_decomposition_features_tensor = torch.tensor([base_decomposition_features_tensor.item()])
-            elif base_decomposition_features_tensor.ndim > 1:
-                base_decomposition_features_tensor = base_decomposition_features_tensor.squeeze()
-            
-            if base_decomposition_features_tensor.numel() != getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', base_decomposition_features_tensor.numel()):
-                warnings.warn(f"Loaded base decomposition features for {jid} (SG {sg_number}) have wrong dim {base_decomposition_features_tensor.numel()}, expected {getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 0)}. Using dummy.")
-                base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32)
-
-        except Exception as e:
-            warnings.warn(f"Could not load base physics features for SG {sg_number} (JID: {jid}) from {base_physics_features_path}: {e}. Returning zeros.")
-            base_decomposition_features_tensor = torch.zeros(getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2), dtype=torch.float32)
-
-
-        # Load SG-specific metadata.json for EBR and Decomposition Branches
-        sg_metadata_json_path = kspace_sg_folder / 'metadata.json'
-        sg_metadata = {}
-        try:
-            with open(sg_metadata_json_path, 'r') as f:
-                sg_metadata = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            warnings.warn(f"Could not load SG metadata for SG {sg_number} (JID: {jid}) from {sg_metadata_json_path}: {e}. Using empty metadata.")
-
-        # Process EBR data
-        ebr_features_vec = torch.zeros(len(self.all_possible_irreps), dtype=torch.float32)
-        if 'ebr_data' in sg_metadata and 'irrep_multiplicities' in sg_metadata['ebr_data']:
-            multiplicities = sg_metadata['ebr_data']['irrep_multiplicities']
-            processed_multiplicities = {k.replace('\u0393', 'Γ'): v for k, v in multiplicities.items()}
-            for i, irrep_name in enumerate(self.all_possible_irreps):
-                if irrep_name in processed_multiplicities:
-                    ebr_features_vec[i] = processed_multiplicities[irrep_name]
-        ebr_features_vec = self._check_and_handle_nan_inf(ebr_features_vec, f"ebr_features_vec", jid)
-        
-        # Process Decomposition Branches
-        sg_decomposition_indices_tensor = torch.zeros(self.max_decomposition_indices_len, dtype=torch.float32)
-        if 'decomposition_branches' in sg_metadata and 'decomposition_indices' in sg_metadata['decomposition_branches']:
-            indices_list = sg_metadata['decomposition_branches']['decomposition_indices']
-            temp_tensor = torch.tensor(indices_list, dtype=torch.float32)
-            num_elements_to_copy = min(temp_tensor.numel(), self.max_decomposition_indices_len)
-            sg_decomposition_indices_tensor[:num_elements_to_copy] = temp_tensor[:num_elements_to_copy]
-        sg_decomposition_indices_tensor = self._check_and_handle_nan_inf(sg_decomposition_indices_tensor, f"sg_decomposition_indices_tensor", jid)
-
-
-        # Combine all decomposition-related features for the `decomposition_features` input
-        full_decomposition_features_tensor = torch.cat([
-            base_decomposition_features_tensor,
-            ebr_features_vec,
-            sg_decomposition_indices_tensor
-        ])
-        
-        if full_decomposition_features_tensor.numel() != self._expected_decomposition_feature_dim:
-            warnings.warn(f"Final decomposition feature dim mismatch for {jid} (SG {sg_number}). Expected {self._expected_decomposition_feature_dim}, got {full_decomposition_features_tensor.numel()}. Adjusting.")
-            if full_decomposition_features_tensor.numel() < self._expected_decomposition_feature_dim:
-                padding = torch.zeros(self._expected_decomposition_feature_dim - full_decomposition_features_tensor.numel(), dtype=torch.float32)
-                full_decomposition_features_tensor = torch.cat([full_decomposition_features_tensor, padding])
-            else:
-                full_decomposition_features_tensor = full_decomposition_features_tensor[:self._expected_decomposition_feature_dim]
-        full_decomposition_features_tensor = self._check_and_handle_nan_inf(full_decomposition_features_tensor, f"full_decomposition_features", jid)
-
-
-        # --- NEW: Extract specific gap, DOS, Fermi features ---
-        # gap_features (Band Gap)
-        band_gap_val = row['band_gap']
-        gap_features_tensor = torch.tensor([0.0 if pd.isna(band_gap_val) else band_gap_val], dtype=torch.float)
-        gap_features_tensor = self._check_and_handle_nan_inf(gap_features_tensor, "band_gap", jid)
-        # Ensure it has the correct dimension as defined in config
-        if gap_features_tensor.numel() != config.BAND_GAP_SCALAR_DIM:
-            warnings.warn(f"Band gap tensor for {jid} has dim {gap_features_tensor.numel()}, expected {config.BAND_GAP_SCALAR_DIM}. Adjusting.")
-            gap_features_tensor = torch.zeros(config.BAND_GAP_SCALAR_DIM, dtype=torch.float)
-
-
-        jid_dos_fermi_sub_dir = self.dos_fermi_dir / jid 
-        dos_file_path = jid_dos_fermi_sub_dir / "dos_data.npy"      
-        fermi_file_path = jid_dos_fermi_sub_dir / "fermi_energy.npy"  
-
-        # --- Load DOS Features ---
-        dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Initialize with zeros as fallback
-        try:
-            if dos_file_path.exists():
-                dos_data = np.load(dos_file_path)
-                dos_features_tensor = torch.tensor(dos_data, dtype=torch.float)
-                dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
-                
-                # IMPORTANT: Ensure the loaded tensor matches the expected dimension.
-                if dos_features_tensor.numel() != config.DOS_FEATURE_DIM:
-                    warnings.warn(f"DOS features for {jid} have dimension {dos_features_tensor.numel()}, expected {config.DOS_FEATURE_DIM}. Resizing or padding to match.")
-                    if dos_features_tensor.numel() < config.DOS_FEATURE_DIM:
-                        padding = torch.zeros(config.DOS_FEATURE_DIM - dos_features_tensor.numel(), dtype=torch.float, device=dos_features_tensor.device)
-                        dos_features_tensor = torch.cat([dos_features_tensor, padding])
-                    else:
-                        dos_features_tensor = dos_features_tensor[:config.DOS_FEATURE_DIM]
-            else:
-                #warnings.warn(f"DOS file not found for JID {jid} at {dos_file_path}. Using zeros.")
-                pass
-        except Exception as e:
-            warnings.warn(f"Error loading DOS features for JID {jid} from {dos_file_path}: {e}. Using zeros.")
-            dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float)
-
-        # --- Load Fermi Surface Features ---
-        fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Initialize with zeros as fallback
-        try:
-            if fermi_file_path.exists():
-                fermi_data = np.load(fermi_file_path)
-                fermi_features_tensor = torch.tensor(fermi_data, dtype=torch.float)
-                fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
-
-                # IMPORTANT: Ensure the loaded tensor matches the expected dimension.
-                if fermi_features_tensor.numel() != config.FERMI_FEATURE_DIM:
-                    warnings.warn(f"Fermi features for {jid} have dimension {fermi_features_tensor.numel()}, expected {config.FERMI_FEATURE_DIM}. Resizing or padding to match.")
-                    if fermi_features_tensor.numel() < config.FERMI_FEATURE_DIM:
-                        padding = torch.zeros(config.FERMI_FEATURE_DIM - fermi_features_tensor.numel(), dtype=torch.float, device=fermi_features_tensor.device)
-                        fermi_features_tensor = torch.cat([fermi_features_tensor, padding])
-                    else:
-                        fermi_features_tensor = fermi_features_tensor[:config.FERMI_FEATURE_DIM]
-            else:
-              #  warnings.warn(f"Fermi file not found for JID {jid} at {fermi_file_path}. Using zeros.")
-              pass
-        except Exception as e:
-            warnings.warn(f"Error loading Fermi features for JID {jid} from {fermi_file_path}: {e}. Using zeros.")
-            fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float)
-
-
-        # Consolidate kspace_physics_features dictionary for the model
-        kspace_physics_features_dict = {
-            'decomposition_features': full_decomposition_features_tensor,
-            'gap_features': gap_features_tensor,
-            'dos_features': dos_features_tensor,
-            'fermi_features': fermi_features_tensor
-        }
-
-        # jid_dos_fermi_sub_dir = self.dos_fermi_dir / jid
-        # dos_file_path = jid_dos_fermi_sub_dir / "dos_data.npy"      
-        # fermi_file_path = jid_dos_fermi_sub_dir / "fermi_energy.npy"  
-
-        # DOS Features (placeholder if not directly loaded)
-        # You would replace this with actual loading if you have DOS data files
-        # dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Placeholder
-        # dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
-
-
-
-        # # Fermi Surface Features (placeholder if not directly loaded)
-        # # You would replace this with actual loading if you have Fermi surface data
-        # fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Placeholder
-        # fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
-
-        # # Consolidate kspace_physics_features dictionary for the model
-        # kspace_physics_features_dict = {
-        # # ... your existing scalar features columns ...
-        # self.scalar_features_columns = [
-        #     'band_gap', 'formation_energy', 'density', 'volume', 'nsites',
-        #     'space_group_number', 'total_magnetization', 'energy_above_hull'
-        # ]
-        # Updated scalar features columns, now excluding 'band_gap' if it's extracted separately
-        self.scalar_features_columns = [
-            'formation_energy', 'energy_above_hull', 'density', 'volume', 'nsites',
-            'space_group_number', 'total_magnetization'
-        ]
-        
-        self.all_possible_irreps = getattr(config, 'ALL_POSSIBLE_IRREPS', [])
-        if not self.all_possible_irreps:
-            warnings.warn("config.ALL_POSSIBLE_IRREPS is not set. Using a limited default. This may cause issues.")
-            # Default to some common irreps if the file is missing
-            self.all_possible_irreps = sorted([
-                "R1", "T1", "U1", "V1", "X1", "Y1", "Z1", "Γ1", "GP1",
-                "R2R2", "T2T2", "U2U2", "V2V2", "X2X2", "Y2Y2", "Z2Z2", "Γ2Γ2", "2GP2"
-            ])
-
-        self.max_decomposition_indices_len = getattr(config, 'MAX_DECOMPOSITION_INDICES_LEN', 5)
-        
-        self._expected_decomposition_feature_dim = getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 0) + \
-                                                   len(self.all_possible_irreps) + \
-                                                   self.max_decomposition_indices_len
-        
-        if not hasattr(config, 'DECOMPOSITION_FEATURE_DIM') or config.DECOMPOSITION_FEATURE_DIM is None:
-             config.DECOMPOSITION_FEATURE_DIM = self._expected_decomposition_feature_dim
-        elif config.DECOMPOSITION_FEATURE_DIM != self._expected_decomposition_feature_dim:
-             warnings.warn(f"Config DECOMPOSITION_FEATURE_DIM ({config.DECOMPOSITION_FEATURE_DIM}) does not match calculated ({self._expected_decomposition_feature_dim}). Using calculated.")
-             config.DECOMPOSITION_FEATURE_DIM = self._expected_decomposition_feature_dim
-
-        # Ensure these are initialized only if they aren't already explicitly set in config
-        # and if a sample is available to infer from.
-        self._crystal_node_feature_dim = getattr(config, 'CRYSTAL_NODE_FEATURE_DIM', 0)
-        self._kspace_graph_node_feature_dim = getattr(config, 'KSPACE_GRAPH_NODE_FEATURE_DIM', 0)
-        self._asph_feature_dim = getattr(config, 'ASPH_FEATURE_DIM', 0)
-        self._scalar_total_dim = getattr(config, 'SCALAR_TOTAL_DIM', len(self.scalar_features_columns) + getattr(config, 'BAND_REP_FEATURE_DIM', 0)) # Excludes band_gap here.
-        
-    def __len__(self) -> int:
-        return len(self.metadata_df)
-
-    def _check_and_handle_nan_inf(self, tensor: torch.Tensor, feature_name: str, jid: str) -> torch.Tensor:
-        """Helper to check for NaN/Inf and replace them with zeros, warning if found."""
-        if torch.isnan(tensor).any() or torch.isinf(tensor).any():
-            warnings.warn(f"NaN/Inf detected in {feature_name} for JID {jid}. Replacing with zeros.")
-            tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
-        return tensor
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        row = self.metadata_df.iloc[idx]
-        jid = row['jid'] 
-
-        # --- 1. Load Crystal Graph ---
-        crystal_graph_path = Path('/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs') / jid / 'crystal_graph.pkl'
-        crystal_graph_dict = load_pickle_data(crystal_graph_path)
-        crystal_graph = load_material_graph_from_dict(crystal_graph_dict)
-        crystal_graph.x = self._check_and_handle_nan_inf(crystal_graph.x, f"crystal_graph.x", jid)
-        crystal_graph.pos = self._check_and_handle_nan_inf(crystal_graph.pos, f"crystal_graph.pos", jid)
-        crystal_graph.edge_attr = self._check_and_handle_nan_inf(crystal_graph.edge_attr, f"crystal_graph.edge_attr", jid)
-        
-        # --- 2. Load ASPH Features ---
-        asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / "asph_features_rev2.npy"
-        try:
-            asph_features_np = np.load(asph_features_path)
-            asph_features = torch.tensor(asph_features_np, dtype=torch.float)
-            asph_features = self._check_and_handle_nan_inf(asph_features, f"asph_features", jid)
-        except Exception as e:
-            warnings.warn(f"Could not load ASPH features for JID {jid} from {asph_features_path}: {e}. Returning zeros.")
-            asph_features = torch.zeros(getattr(config, 'ASPH_FEATURE_DIM', 3115), dtype=torch.float)
+                scaled_asph_features_np = self.scaler['asph'].transform(asph_features.cpu().numpy())
+                asph_features = torch.tensor(scaled_asph_features_np, dtype=torch.float)
+            asph_features = self._check_and_handle_nan_inf(asph_features, f"asph_features_after_scaler", jid)
 
 
         # --- 3. Load K-space Graph and related Physics Features ---
@@ -541,6 +288,17 @@ class MaterialDataset(Dataset):
                 full_decomposition_features_tensor = full_decomposition_features_tensor[:self._expected_decomposition_feature_dim]
         full_decomposition_features_tensor = self._check_and_handle_nan_inf(full_decomposition_features_tensor, f"full_decomposition_features", jid)
 
+        # Apply scaling to decomposition features
+        if self.scaler and 'decomp' in self.scaler:
+            if full_decomposition_features_tensor.ndim == 1:
+                decomp_features_np = full_decomposition_features_tensor.unsqueeze(0).cpu().numpy()
+                scaled_decomp_features_np = self.scaler['decomp'].transform(decomp_features_np)
+                full_decomposition_features_tensor = torch.tensor(scaled_decomp_features_np.squeeze(0), dtype=torch.float)
+            else:
+                scaled_decomp_features_np = self.scaler['decomp'].transform(full_decomposition_features_tensor.cpu().numpy())
+                full_decomposition_features_tensor = torch.tensor(scaled_decomp_features_np, dtype=torch.float)
+            full_decomposition_features_tensor = self._check_and_handle_nan_inf(full_decomposition_features_tensor, f"full_decomposition_features_after_scaler", jid)
+
 
         # --- NEW: Extract specific gap, DOS, Fermi features ---
         # gap_features (Band Gap)
@@ -558,50 +316,40 @@ class MaterialDataset(Dataset):
         fermi_file_path = jid_dos_fermi_sub_dir / "fermi_energy.npy"  
 
         # --- Load DOS Features ---
-        dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Initialize with zeros as fallback
-        try:
-            if dos_file_path.exists():
+        dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float)
+        if dos_file_path.exists():
+            try:
                 dos_data = np.load(dos_file_path)
+                # --- Log1p scaling for DOS features (handle negatives as zero) ---
+                dos_data = np.where(dos_data < 0, 0, dos_data)
+                dos_data = np.log1p(dos_data)
+                if dos_data.shape[0] != config.DOS_FEATURE_DIM:
+                    warnings.warn(f"DOS data for {jid} has dim {dos_data.shape[0]}, expected {config.DOS_FEATURE_DIM}. Adjusting.")
+                    dos_data = np.zeros(config.DOS_FEATURE_DIM)
                 dos_features_tensor = torch.tensor(dos_data, dtype=torch.float)
-                dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
-                
-                # IMPORTANT: Ensure the loaded tensor matches the expected dimension.
-                if dos_features_tensor.numel() != config.DOS_FEATURE_DIM:
-                    warnings.warn(f"DOS features for {jid} have dimension {dos_features_tensor.numel()}, expected {config.DOS_FEATURE_DIM}. Resizing or padding to match.")
-                    if dos_features_tensor.numel() < config.DOS_FEATURE_DIM:
-                        padding = torch.zeros(config.DOS_FEATURE_DIM - dos_features_tensor.numel(), dtype=torch.float, device=dos_features_tensor.device)
-                        dos_features_tensor = torch.cat([dos_features_tensor, padding])
-                    else:
-                        dos_features_tensor = dos_features_tensor[:config.DOS_FEATURE_DIM]
-            else:
-                #warnings.warn(f"DOS file not found for JID {jid} at {dos_file_path}. Using zeros.")
-                pass
-        except Exception as e:
-            warnings.warn(f"Error loading DOS features for JID {jid} from {dos_file_path}: {e}. Using zeros.")
-            dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float)
+            except Exception as e:
+                warnings.warn(f"Could not load DOS data for JID {jid} from {dos_file_path}: {e}. Returning zeros.")
+        else:
+            #warnings.warn(f"DOS file not found for JID {jid} at {dos_file_path}. Using zeros.")
+            pass
 
         # --- Load Fermi Surface Features ---
-        fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Initialize with zeros as fallback
-        try:
-            if fermi_file_path.exists():
+        fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float)
+        if fermi_file_path.exists():
+            try:
                 fermi_data = np.load(fermi_file_path)
+                # --- Log1p scaling for Fermi features (handle negatives as zero) ---
+                fermi_data = np.where(fermi_data < 0, 0, fermi_data)
+                fermi_data = np.log1p(fermi_data)
+                if fermi_data.shape[0] != config.FERMI_FEATURE_DIM:
+                    warnings.warn(f"Fermi data for {jid} has dim {fermi_data.shape[0]}, expected {config.FERMI_FEATURE_DIM}. Adjusting.")
+                    fermi_data = np.zeros(config.FERMI_FEATURE_DIM)
                 fermi_features_tensor = torch.tensor(fermi_data, dtype=torch.float)
-                fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
-
-                # IMPORTANT: Ensure the loaded tensor matches the expected dimension.
-                if fermi_features_tensor.numel() != config.FERMI_FEATURE_DIM:
-                    warnings.warn(f"Fermi features for {jid} have dimension {fermi_features_tensor.numel()}, expected {config.FERMI_FEATURE_DIM}. Resizing or padding to match.")
-                    if fermi_features_tensor.numel() < config.FERMI_FEATURE_DIM:
-                        padding = torch.zeros(config.FERMI_FEATURE_DIM - fermi_features_tensor.numel(), dtype=torch.float, device=fermi_features_tensor.device)
-                        fermi_features_tensor = torch.cat([fermi_features_tensor, padding])
-                    else:
-                        fermi_features_tensor = fermi_features_tensor[:config.FERMI_FEATURE_DIM]
-            else:
-              #  warnings.warn(f"Fermi file not found for JID {jid} at {fermi_file_path}. Using zeros.")
-              pass
-        except Exception as e:
-            warnings.warn(f"Error loading Fermi features for JID {jid} from {fermi_file_path}: {e}. Using zeros.")
-            fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float)
+            except Exception as e:
+                warnings.warn(f"Could not load Fermi data for JID {jid} from {fermi_file_path}: {e}. Returning zeros.")
+        else:
+          #  warnings.warn(f"Fermi file not found for JID {jid} at {fermi_file_path}. Using zeros.")
+          pass
 
 
         # Consolidate kspace_physics_features dictionary for the model
@@ -611,31 +359,6 @@ class MaterialDataset(Dataset):
             'dos_features': dos_features_tensor,
             'fermi_features': fermi_features_tensor
         }
-
-        # jid_dos_fermi_sub_dir = self.dos_fermi_dir / jid
-        # dos_file_path = jid_dos_fermi_sub_dir / "dos_data.npy"      
-        # fermi_file_path = jid_dos_fermi_sub_dir / "fermi_energy.npy"  
-
-        # DOS Features (placeholder if not directly loaded)
-        # You would replace this with actual loading if you have DOS data files
-        # dos_features_tensor = torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float) # Placeholder
-        # dos_features_tensor = self._check_and_handle_nan_inf(dos_features_tensor, "dos_features", jid)
-
-
-
-        # # Fermi Surface Features (placeholder if not directly loaded)
-        # # You would replace this with actual loading if you have Fermi surface data
-        # fermi_features_tensor = torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float) # Placeholder
-        # fermi_features_tensor = self._check_and_handle_nan_inf(fermi_features_tensor, "fermi_features", jid)
-
-        # # Consolidate kspace_physics_features dictionary for the model
-        # kspace_physics_features_dict = {
-        #     'decomposition_features': full_decomposition_features_tensor,
-        #     'gap_features': gap_features_tensor,
-        #     'dos_features': dos_features_tensor,
-        #     'fermi_features': fermi_features_tensor
-        # }
-
 
         # --- 4. Extract Scalar Features (Band Reps + Metadata, NOW EXCLUDING BAND GAP) ---
         band_rep_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / 'band_rep_features.npy'
@@ -657,13 +380,13 @@ class MaterialDataset(Dataset):
         combined_scalar_features = self._check_and_handle_nan_inf(combined_scalar_features, f"combined_scalar_features_before_scaler", jid)
         
         # Apply scaling to combined_scalar_features.
-        if self.scaler:
+        if self.scaler and 'scalar' in self.scaler:
             if combined_scalar_features.ndim == 1:
                 combined_scalar_features_np = combined_scalar_features.unsqueeze(0).cpu().numpy()
-                scaled_features_np = self.scaler.transform(combined_scalar_features_np)
+                scaled_features_np = self.scaler['scalar'].transform(combined_scalar_features_np)
                 combined_scalar_features = torch.tensor(scaled_features_np.squeeze(0), dtype=torch.float)
             else: 
-                scaled_features_np = self.scaler.transform(combined_scalar_features.cpu().numpy())
+                scaled_features_np = self.scaler['scalar'].transform(combined_scalar_features.cpu().numpy())
                 combined_scalar_features = torch.tensor(scaled_features_np, dtype=torch.float)
             combined_scalar_features = self._check_and_handle_nan_inf(combined_scalar_features, f"combined_scalar_features_after_scaler", jid)
 

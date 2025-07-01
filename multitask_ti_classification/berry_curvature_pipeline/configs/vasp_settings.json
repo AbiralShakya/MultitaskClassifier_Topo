@@ -1,0 +1,43 @@
+{
+  "vasp_settings": {
+    "soc_settings": {
+      "LSORBIT": true,
+      "LORBIT": 14,
+      "ICHARG": 11,
+      "ISPIN": 2,
+      "MAGMOM": "auto"
+    },
+    "kpoint_settings": {
+      "kmesh": [8, 8, 8],
+      "gamma_centered": true,
+      "kpoint_shift": [0.0, 0.0, 0.0]
+    },
+    "convergence_settings": {
+      "ENCUT": 520,
+      "EDIFF": 1e-6,
+      "EDIFFG": -0.01,
+      "NELM": 200,
+      "NELMIN": 4
+    },
+    "output_settings": {
+      "LWAVE": true,
+      "LCHARG": true,
+      "LORBIT": 14,
+      "LVTOT": false,
+      "LVHAR": false
+    },
+    "system_settings": {
+      "PREC": "Accurate",
+      "ALGO": "Normal",
+      "LREAL": "Auto",
+      "LPLANE": true,
+      "NPAR": 1
+    }
+  },
+  "berry_curvature_settings": {
+    "kmesh_dense": [80, 80, 80],
+    "smearing": 0.05,
+    "bands_range": "auto",
+    "fermi_energy": "auto"
+  }
+} 
