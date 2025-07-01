@@ -1,3 +1,4 @@
+# Updated for HybridTopoClassifier pipeline (CGCNN + ASPH + k-space GNN/Transformer/Physics)
 import os
 from pathlib import Path
 import torch
@@ -25,7 +26,7 @@ TOPOLOGY_CLASS_MAPPING = {
 }
 NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values()))
 
-NUM_WORKERS = 8
+NUM_WORKERS = 4
 
 # --- Magnetism Classification ---
 MAGNETISM_CLASS_MAPPING = {
@@ -63,7 +64,7 @@ FFNN_HIDDEN_DIMS_SCALAR = [256, 128]
 
 # --- Training Parameters ---
 LEARNING_RATE = 0.001
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 NUM_EPOCHS = 50
 DROPOUT_RATE = 0.2
 PATIENCE = 10
@@ -89,10 +90,14 @@ VAL_RATIO = 0.1
 TEST_RATIO = 0.1
 
 # --- Feature Dimensions ---
-CRYSTAL_NODE_FEATURE_DIM = 3
+CRYSTAL_NODE_FEATURE_DIM = 3  # actual crystal graph node feature dimension from data
+CRYSTAL_EDGE_FEATURE_DIM = 1  # e.g., binned distance
 ASPH_FEATURE_DIM = 3115
+KSPACE_NODE_FEATURE_DIM = 10  # updated to match your k-space node feature dim
+KSPACE_EDGE_FEATURE_DIM = 4   # adjust to your k-space edge feature dim
+KSPACE_GRAPH_NODE_FEATURE_DIM = 10  # k-space graph node feature dimension
+KSPACE_GRAPH_EDGE_FEATURE_DIM = 4   # k-space graph edge feature dimension
 BAND_REP_FEATURE_DIM = 4756
-KSPACE_GRAPH_NODE_FEATURE_DIM = 10
 
 BASE_DECOMPOSITION_FEATURE_DIM = 2
 ALL_POSSIBLE_IRREPS = []
@@ -112,7 +117,7 @@ DECOMPOSITION_FEATURE_DIM = BASE_DECOMPOSITION_FEATURE_DIM + \
 
 # --- EnhancedKSpacePhysicsFeatures ---
 BAND_GAP_SCALAR_DIM = 1
-DOS_FEATURE_DIM = 500
+DOS_FEATURE_DIM = 500  # updated to match your DOS feature dim
 FERMI_FEATURE_DIM = 1
 
 # --- Scalar Total Dim (excludes band_gap) ---

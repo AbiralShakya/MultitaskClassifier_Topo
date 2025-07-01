@@ -1,37 +1,52 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch_geometric.nn import global_mean_pool
-from torch_geometric.nn.conv import TransformerConv # A basic GNN Transformer layer
 
-class KSpaceCTGNN(nn.Module):
-    def __init__(self, input_node_dim, hidden_dim=512, n_layers=4, num_heads=8):
+class KSpaceTransformerEncoder(nn.Module):
+    def __init__(self, node_dim, edge_dim, out_dim=64, model_dim=64, num_layers=2, num_heads=4):
         super().__init__()
-        # Initial projection for k-point features (irrep_id, energy_rank, pos_encodings)
-        self.initial_projection = nn.Linear(input_node_dim, hidden_dim)
+        self.input_proj = nn.Linear(node_dim, model_dim)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=model_dim, nhead=num_heads, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.out_proj = nn.Linear(model_dim, out_dim)
         
-        self.layers = nn.ModuleList()
-        for _ in range(n_layers):
-            # TransformerConv is a good starting point for graph transformers
-            # It performs self-attention over neighbors.
-            self.layers.append(TransformerConv(
-                in_channels=hidden_dim,
-                out_channels=hidden_dim,
-                heads=num_heads,
-                dropout=0.1,
-                beta=True # Uses skip connection from original node features
-            ))
-            # You might add LayerNorm and ReLU/GELU after each layer
-            self.layers.append(nn.LayerNorm(hidden_dim))
-            self.layers.append(nn.ReLU())
-
-    def forward(self, data):
-        # Expects a Data object with data.x, data.edge_index, data.batch
-        x = self.initial_projection(data.x)
+    def forward(self, x, edge_index, edge_attr, batch):
+        # x: (num_nodes, node_dim) - node features from graph
+        # Transform to sequence format for transformer
+        x = self.input_proj(x)  # (num_nodes, model_dim)
         
-        for i, layer in enumerate(self.layers):
-            if isinstance(layer, TransformerConv):
-                x = layer(x, data.edge_index)
-            else: # LayerNorm, ReLU
-                x = layer(x)
-
-        return global_mean_pool(x, data.batch) # Output size (B, hidden_dim)
+        # Group by batch to create sequences
+        batch_size = batch.max().item() + 1
+        sequences = []
+        
+        for i in range(batch_size):
+            mask = (batch == i)
+            seq = x[mask]  # (num_nodes_in_batch_i, model_dim)
+            sequences.append(seq)
+        
+        # Pad sequences to same length for transformer
+        max_len = max(seq.size(0) for seq in sequences)
+        padded_sequences = []
+        
+        for seq in sequences:
+            if seq.size(0) < max_len:
+                padding = torch.zeros(max_len - seq.size(0), seq.size(1), device=seq.device)
+                padded_seq = torch.cat([seq, padding], dim=0)
+            else:
+                padded_seq = seq
+            padded_sequences.append(padded_seq)
+        
+        # Stack into batch: (batch_size, max_len, model_dim)
+        x_batch = torch.stack(padded_sequences)
+        
+        # Apply transformer
+        x_batch = self.transformer(x_batch)  # (batch_size, max_len, model_dim)
+        
+        # Global pooling: take mean across sequence length
+        x_batch = x_batch.mean(dim=1)  # (batch_size, model_dim)
+        
+        # Final projection
+        out = self.out_proj(x_batch)  # (batch_size, out_dim)
+        
+        return out

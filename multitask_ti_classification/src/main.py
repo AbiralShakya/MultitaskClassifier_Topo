@@ -27,5 +27,5 @@ def setup_environment():
 if __name__ == "__main__":
     setup_environment()
     print("\nStarting multi-modal material classification training...")
-    trainer.main_training_loop() # Changed function call
+    trainer.train() 
     print("\nTraining process finished.")

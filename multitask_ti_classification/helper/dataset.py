@@ -412,17 +412,13 @@ class MaterialDataset(Dataset):
         cmb_int  = config.get_combined_label_from_ints(topo_int, mag_int)
         combined_label = torch.tensor(cmb_int, dtype=torch.long)
 
-        return {
-            'crystal_graph': crystal_graph,
-            'kspace_graph': kspace_graph, # Now includes .pos and .symmetry_labels (if available)
-            'asph_features': asph_features,
-            'scalar_features': combined_scalar_features, # Excludes band_gap
-            'kspace_physics_features': kspace_physics_features_dict, # Now includes decomp, gap, dos, fermi
-            'topology_label': topology_label,
-            'magnetism_label': magnetism_label,
-            'combined_label' : combined_label,
-            'jid': jid 
-        }
+        # Ensure asph_features is a torch tensor
+        if isinstance(asph_features, torch.Tensor):
+            asph_features = asph_features.detach().clone()
+        else:
+            asph_features = torch.tensor(asph_features, dtype=torch.float32)
+        # Return as tuple for the new model - use topology_label instead of combined_label
+        return crystal_graph, asph_features, kspace_graph, kspace_physics_features_dict, topology_label
 
     # --- Dummy Data Generation Methods ---
     def _generate_dummy_crystal_graph(self):
