@@ -4,3 +4,4 @@ fermi surface features versus just fermi energy.
 all of this needs DFT and DFT post processing, extremeley compute intensive, groups have began trying to do with ML predictions, if that works then integrate with this for iteration
 
 need to consider the berry curvature with ML somehow
+

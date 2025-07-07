@@ -137,6 +137,11 @@ COMBINED_CLASS_MAPPING = {
 }
 NUM_COMBINED_CLASSES = len(set(COMBINED_CLASS_MAPPING.values()))
 
+K_LAPLACIAN_EIGS = 10
+
+# Hidden size of the MLP embedding those eigenvalues
+SPECTRAL_HID = 32
+
 def get_combined_label(topology_str: str, magnetism_str: str) -> int:
     topo_str_canonical = TOPOLOGY_INT_TO_CANONICAL_STR.get(
         TOPOLOGY_CLASS_MAPPING.get(topology_str, TOPOLOGY_CLASS_MAPPING["Unknown"]),
