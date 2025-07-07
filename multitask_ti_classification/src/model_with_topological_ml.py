@@ -8,14 +8,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Any, List
 
-# Existing components
-from model import (
-    TopologicalCrystalEncoder,
-    KSpaceTransformerGNNEncoder,
-    PHTokenEncoder,
-    ScalarFeatureEncoder,
-    EnhancedKSpacePhysicsFeatures
-)
+from helper.topological_crystal_encoder import TopologicalCrystalEncoder
+from helper.kspace_physics_encoders import EnhancedKSpacePhysicsFeatures
+from encoders.ph_token_encoder import PHTokenEncoder
+from src.model_w_debug import ScalarFeatureEncoder, KSpaceTransformerGNNEncoder
+
 # Topological ML encoder
 from topological_ml_encoder import (
     TopologicalMLEncoder,
@@ -85,8 +82,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         # Persistent homology token encoder
         self.asph_encoder = PHTokenEncoder(
             input_dim=asph_feature_dim,
-            hidden_dims=ffnn_hidden_dims_asph,
-            out_channels=latent_dim_asph
+            output_dim=latent_dim_asph
         )
         # Scalar features encoder
         self.scalar_encoder = ScalarFeatureEncoder(

@@ -42,6 +42,7 @@ NUM_MAGNETISM_CLASSES = len(set(MAGNETISM_CLASS_MAPPING.values()))
 LATENT_DIM_GNN = 128
 LATENT_DIM_ASPH = 128
 LATENT_DIM_OTHER_FFNN = 128
+LATENT_DIM_FFNN = LATENT_DIM_OTHER_FFNN
 
 # Crystal encoder specific parameters
 crystal_encoder_output_dim = 128
