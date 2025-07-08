@@ -19,11 +19,11 @@ import helper.config as config
 from helper.topo_utils import SpaceGroupManager, load_material_graph_from_dict, load_pickle_data 
 
 # --- GLOBAL SETTING FOR TORCH.LOAD SAFETY ---
-torch.serialization.add_safe_globals([
-    torch_geometric.data.data.DataEdgeAttr,
-    torch_geometric.data.data.DataTensorAttr,
-    torch_geometric.data.storage.GlobalStorage 
-])
+# torch.serialization.add_safe_globals([
+#     torch_geometric.data.data.DataEdgeAttr,
+#     torch_geometric.data.data.DataTensorAttr,
+#     torch_geometric.data.storage.GlobalStorage 
+# ])
 
 warnings.filterwarnings("ignore", ".*is not in the top-level domain.*", UserWarning)
 
