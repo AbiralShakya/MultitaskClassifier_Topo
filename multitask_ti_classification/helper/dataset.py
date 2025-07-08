@@ -19,11 +19,11 @@ import helper.config as config
 from helper.topo_utils import SpaceGroupManager, load_material_graph_from_dict, load_pickle_data 
 
 # --- GLOBAL SETTING FOR TORCH.LOAD SAFETY ---
-# torch.serialization.add_safe_globals([
-#     torch_geometric.data.data.DataEdgeAttr,
-#     torch_geometric.data.data.DataTensorAttr,
-#     torch_geometric.data.storage.GlobalStorage 
-# ])
+torch.serialization.add_safe_globals([
+    torch_geometric.data.data.DataEdgeAttr,
+    torch_geometric.data.data.DataTensorAttr,
+    torch_geometric.data.storage.GlobalStorage 
+])
 
 warnings.filterwarnings("ignore", ".*is not in the top-level domain.*", UserWarning)
 
@@ -152,8 +152,10 @@ class MaterialDataset(Dataset):
         return tensor
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
+        #print(f"[DATASET] __getitem__ start: idx={idx}")
         row = self.metadata_df.iloc[idx]
         jid = row['jid'] 
+       #print(f"[DATASET] Loading JID: {jid} (idx={idx})")
 
         # --- 1. Load Crystal Graph ---
         crystal_graph_path = Path('/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs') / jid / 'crystal_graph.pkl'
@@ -194,7 +196,7 @@ class MaterialDataset(Dataset):
         kspace_graph = None
         try:
             # Assuming kspace_graph.pt might contain pos and symmetry_labels
-            kspace_graph = torch.load(kspace_graph_path)
+            kspace_graph = torch.load(kspace_graph_path, weights_only=False)
             kspace_graph.x = self._check_and_handle_nan_inf(kspace_graph.x, f"kspace_graph.x", jid)
             if hasattr(kspace_graph, 'pos') and kspace_graph.pos is not None:
                 kspace_graph.pos = self._check_and_handle_nan_inf(kspace_graph.pos, f"kspace_graph.pos", jid)
@@ -218,7 +220,7 @@ class MaterialDataset(Dataset):
         base_physics_features_path = kspace_sg_folder / 'physics_features.pt'
         base_decomposition_features_tensor = None
         try:
-            loaded_data = torch.load(base_physics_features_path)
+            loaded_data = torch.load(base_physics_features_path, weights_only=False)
             if isinstance(loaded_data, dict) and 'decomposition_features' in loaded_data:
                 base_decomposition_features_tensor = loaded_data['decomposition_features']
             elif isinstance(loaded_data, torch.Tensor):
@@ -419,6 +421,7 @@ class MaterialDataset(Dataset):
             asph_features = torch.tensor(asph_features, dtype=torch.float32)
         
         # Return as dictionary for the collate function
+        print(f"[DATASET] __getitem__ end: idx={idx}, JID={jid}")
         return {
             'crystal_graph': crystal_graph,
             'asph_features': asph_features,
@@ -460,6 +463,7 @@ class MaterialDataset(Dataset):
         return torch.zeros(base_decomposition_feature_dim)
 
 def custom_collate_fn(batch_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+    print(f"[COLLATE] custom_collate_fn called with batch_list of size {len(batch_list)}")
     """
     Custom collate function for PyGDataLoader to handle a dictionary of inputs.
     It will batch PyGData objects separately, stack other tensors,

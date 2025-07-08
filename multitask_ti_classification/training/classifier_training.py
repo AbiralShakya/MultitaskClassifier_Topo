@@ -382,6 +382,18 @@ def main_training_loop():
         num_workers=config.NUM_WORKERS
     )
     
+    # Test DataLoader creation
+    print(f"[DEBUG] DataLoaders created successfully")
+    print(f"[DEBUG] Train loader length: {len(train_loader)}")
+    print(f"[DEBUG] Testing first batch access...")
+    try:
+        first_batch = next(iter(train_loader))
+        print(f"[DEBUG] First batch accessed successfully with keys: {list(first_batch.keys())}")
+    except Exception as e:
+        print(f"[DEBUG] Error accessing first batch: {e}")
+        import traceback
+        traceback.print_exc()
+    
     # Initialize model
     print("Initializing model...")
     model = EnhancedMultiModalMaterialClassifier(
@@ -394,6 +406,29 @@ def main_training_loop():
         num_topology_classes=config.NUM_TOPOLOGY_CLASSES,
         num_magnetism_classes=config.NUM_MAGNETISM_CLASSES
     ).to(device)
+    print(f"[DEBUG] Model initialized successfully on device: {device}")
+    
+    # Test model forward pass
+    print(f"[DEBUG] Testing model forward pass...")
+    try:
+        # Move test batch to device
+        for key in first_batch:
+            if isinstance(first_batch[key], torch.Tensor):
+                first_batch[key] = first_batch[key].to(device)
+            elif hasattr(first_batch[key], 'batch'):  # Check if it's a PyG Batch object
+                first_batch[key] = first_batch[key].to(device)
+            elif isinstance(first_batch[key], dict):
+                for sub_key in first_batch[key]:
+                    if isinstance(first_batch[key][sub_key], torch.Tensor):
+                        first_batch[key][sub_key] = first_batch[key][sub_key].to(device)
+        
+        with torch.no_grad():
+            test_output = model(first_batch)
+        print(f"[DEBUG] Model forward pass successful, output keys: {list(test_output.keys())}")
+    except Exception as e:
+        print(f"[DEBUG] Error in model forward pass: {e}")
+        import traceback
+        traceback.print_exc()
     
     # Setup optimizer and scheduler
     optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE)
@@ -401,6 +436,11 @@ def main_training_loop():
     
     # Training loop
     print("Starting training...")
+    
+    # Add diagnostic prints
+    print(f"[DEBUG] About to start training loop with {len(train_loader)} batches")
+    print(f"[DEBUG] First batch will be created now...")
+    
     best_val_loss = float('inf')
     patience_counter = 0
     
@@ -409,7 +449,11 @@ def main_training_loop():
         model.train()
         train_losses = []
         
+        print(f"[DEBUG] Starting epoch {epoch+1}/{config.NUM_EPOCHS}")
+        print(f"[DEBUG] About to iterate through {len(train_loader)} batches")
+        
         for batch_idx, batch in enumerate(train_loader):
+            print(f"[TRAIN] Starting batch {batch_idx} of {len(train_loader)} (epoch {epoch+1})...")
             try:
                 # Move data to device
                 for key in batch:
@@ -421,24 +465,19 @@ def main_training_loop():
                         for sub_key in batch[key]:
                             if isinstance(batch[key][sub_key], torch.Tensor):
                                 batch[key][sub_key] = batch[key][sub_key].to(device)
-                
                 # Forward pass
                 optimizer.zero_grad()
-                
                 outputs = model(batch)
                 losses = model.compute_enhanced_loss(outputs, {
                     'combined': batch['combined_label'],
                     'topology': batch['topology_label'],
                     'magnetism': batch['magnetism_label']
                 })
-                
                 # Backward pass
                 losses['total_loss'].backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
                 optimizer.step()
-                
                 train_losses.append(losses['total_loss'].item())
-                
                 if batch_idx % 10 == 0:
                     # Monitor GPU memory usage
                     if device.type == 'cuda':
@@ -450,11 +489,11 @@ def main_training_loop():
                     else:
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
                               f"Loss: {losses['total_loss'].item():.4f}")
-                    
             except Exception as e:
                 print(f"ERROR in training batch {batch_idx}: {e}")
                 print(f"Batch keys: {list(batch.keys())}")
                 continue
+            print(f"[TRAIN] Finished batch {batch_idx} of {len(train_loader)} (epoch {epoch+1})")
         
         # Validation phase
         model.eval()
