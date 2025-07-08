@@ -1,9 +1,15 @@
 # Updated for HybridTopoClassifier pipeline (CGCNN + ASPH + k-space GNN/Transformer/Physics)
+print("[DEBUG] config.py: Starting import")
 import os
+print("[DEBUG] config.py: Imported os")
 from pathlib import Path
+print("[DEBUG] config.py: Imported Path")
 import torch
+print("[DEBUG] config.py: Imported torch")
 import pickle
+print("[DEBUG] config.py: Imported pickle")
 import warnings
+print("[DEBUG] config.py: Imported warnings")
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -26,7 +32,7 @@ TOPOLOGY_CLASS_MAPPING = {
 }
 NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values()))
 
-NUM_WORKERS = 0
+NUM_WORKERS = 4
 
 # --- Magnetism Classification ---
 MAGNETISM_CLASS_MAPPING = {
@@ -87,7 +93,9 @@ LOSS_WEIGHT_AUX_TOPOLOGY = 1.0
 LOSS_WEIGHT_AUX_MAGNETISM = 1.0
 
 # --- Device Configuration ---
+print("[DEBUG] config.py: About to configure device...")
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"[DEBUG] config.py: Device configured as {DEVICE}")
 
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
@@ -109,11 +117,17 @@ MAX_DECOMPOSITION_INDICES_LEN = 100
 
 EPSILON_FOR_STD_DIVISION = 1e-8
 
+print("[DEBUG] config.py: About to load irrep_unique file...")
 try:
     with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
         ALL_POSSIBLE_IRREPS = pickle.load(fp)
+    print(f"[DEBUG] config.py: Successfully loaded irrep_unique with {len(ALL_POSSIBLE_IRREPS)} items")
 except FileNotFoundError:
     warnings.warn("irrep_unique file not found. ALL_POSSIBLE_IRREPS will be empty. Decomposition features might be impacted.")
+    print("[DEBUG] config.py: irrep_unique file not found, using empty list")
+except Exception as e:
+    print(f"[DEBUG] config.py: Error loading irrep_unique: {e}")
+    ALL_POSSIBLE_IRREPS = []
 
 DECOMPOSITION_FEATURE_DIM = BASE_DECOMPOSITION_FEATURE_DIM + \
                             len(ALL_POSSIBLE_IRREPS) + \

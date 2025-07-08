@@ -1,12 +1,25 @@
+print("[DEBUG] Script starting - main.py execution begins")
 import sys
 import os
+print("[DEBUG] Imported sys and os")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+print("[DEBUG] Added path to sys.path")
 
+print("[DEBUG] About to import trainer...")
 from training import classifier_training as trainer
+print("[DEBUG] Successfully imported trainer")
+
+print("[DEBUG] About to import config...")
 from helper import config
+print("[DEBUG] Successfully imported config")
+
+print("[DEBUG] About to import model...")
 from src import model
+print("[DEBUG] Successfully imported model")
+
 import os
 from pathlib import Path
+print("[DEBUG] Imported os and Path")
 
 def setup_environment():
     """Ensures necessary directories exist and checks for data."""
