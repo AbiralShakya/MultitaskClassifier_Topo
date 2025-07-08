@@ -267,35 +267,29 @@ def create_hamiltonian_from_features(
         Hamiltonian tensor ready for topological ML encoder
     """
     batch_size = features.shape[0]
+    feature_dim = features.shape[1]
     
     if model_type == "1d_a3":
         # 1D AIII class: 2x2 matrix D(k)
         # Use features to parameterize the Hamiltonian
-        hamiltonian = torch.zeros(batch_size, 8, k_points, device=features.device)
+        hamiltonian = torch.zeros(batch_size, feature_dim, k_points, device=features.device)
         
         # Simple parameterization: use features to create smooth functions
         for i in range(batch_size):
             # Create smooth functions in k-space
             k = torch.linspace(-np.pi, np.pi, k_points, device=features.device)
             
-            # Use features to parameterize D(k) matrix elements
-            f1, f2, f3, f4 = features[i, :4]  # Use first 4 features
-            
-            # D11(k) = f1 * cos(k) + f2 * sin(k)
-            hamiltonian[i, 0] = f1 * torch.cos(k) + f2 * torch.sin(k)  # Re[D11]
-            hamiltonian[i, 1] = f3 * torch.cos(k) + f4 * torch.sin(k)  # Im[D11]
-            
-            # D12(k) = f2 * cos(k) + f1 * sin(k)
-            hamiltonian[i, 2] = f2 * torch.cos(k) + f1 * torch.sin(k)  # Re[D12]
-            hamiltonian[i, 3] = f4 * torch.cos(k) + f3 * torch.sin(k)  # Im[D12]
-            
-            # D21(k) = D12*(k) (hermitian)
-            hamiltonian[i, 4] = hamiltonian[i, 2]  # Re[D21]
-            hamiltonian[i, 5] = -hamiltonian[i, 3]  # Im[D21]
-            
-            # D22(k) = -D11(k) (traceless)
-            hamiltonian[i, 6] = -hamiltonian[i, 0]  # Re[D22]
-            hamiltonian[i, 7] = -hamiltonian[i, 1]  # Im[D22]
+            # Use all features to parameterize the Hamiltonian
+            # Each feature becomes a channel in the Hamiltonian
+            for j in range(feature_dim):
+                f = features[i, j]
+                # Create different patterns for different features
+                if j < 4:
+                    # Use first 4 features for basic parameterization
+                    hamiltonian[i, j] = f * torch.cos(k) + f * torch.sin(k)
+                else:
+                    # Use remaining features for additional complexity
+                    hamiltonian[i, j] = f * torch.sin((j-3) * k * 0.5) + f * torch.cos((j-3) * k * 0.5)
     
     elif model_type == "2d_a":
         # 2D A class: H(k) = h(k)·σ

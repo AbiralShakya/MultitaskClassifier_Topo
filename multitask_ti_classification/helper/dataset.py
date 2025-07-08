@@ -417,8 +417,19 @@ class MaterialDataset(Dataset):
             asph_features = asph_features.detach().clone()
         else:
             asph_features = torch.tensor(asph_features, dtype=torch.float32)
-        # Return as tuple for the new model - use topology_label instead of combined_label
-        return crystal_graph, asph_features, kspace_graph, kspace_physics_features_dict, topology_label
+        
+        # Return as dictionary for the collate function
+        return {
+            'crystal_graph': crystal_graph,
+            'asph_features': asph_features,
+            'kspace_graph': kspace_graph,
+            'kspace_physics_features': kspace_physics_features_dict,
+            'scalar_features': combined_scalar_features,
+            'topology_label': topology_label,
+            'magnetism_label': magnetism_label,
+            'combined_label': combined_label,
+            'jid': jid
+        }
 
     # --- Dummy Data Generation Methods ---
     def _generate_dummy_crystal_graph(self):

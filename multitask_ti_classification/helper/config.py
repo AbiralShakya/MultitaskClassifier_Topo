@@ -46,6 +46,9 @@ LATENT_DIM_FFNN = LATENT_DIM_OTHER_FFNN
 
 # Crystal encoder specific parameters
 crystal_encoder_output_dim = 128
+
+# Topological ML parameters
+AUXILIARY_WEIGHT = 0.1 # Weight for auxiliary topological ML loss
 crystal_encoder_hidden_dim = 128
 crystal_encoder_num_layers = 6
 crystal_encoder_radius = 4.0
@@ -65,7 +68,7 @@ FFNN_HIDDEN_DIMS_SCALAR = [256, 128]
 
 # --- Training Parameters ---
 LEARNING_RATE = 0.001
-BATCH_SIZE = 256
+BATCH_SIZE = 32  # Reduced from 256 to 64 to prevent memory issues
 NUM_EPOCHS = 50
 DROPOUT_RATE = 0.2
 PATIENCE = 10

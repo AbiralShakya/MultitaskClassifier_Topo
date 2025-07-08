@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from training import classifier_training as trainer
 from helper import config
 from src import model
@@ -27,5 +31,5 @@ def setup_environment():
 if __name__ == "__main__":
     setup_environment()
     print("\nStarting multi-modal material classification training...")
-    trainer.train() 
+    trainer.main_training_loop() 
     print("\nTraining process finished.")
