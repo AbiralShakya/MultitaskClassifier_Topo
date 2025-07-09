@@ -254,6 +254,21 @@ def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, train_los
     checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
+    # Clear spectral encoder cache before saving to avoid PyCapsule serialization issues
+    if hasattr(model, 'spectral_encoder') and hasattr(model.spectral_encoder, 'clear_cache'):
+        model.spectral_encoder.clear_cache()
+    
+    # Create a clean config dict without non-serializable objects
+    config_dict = {}
+    for key, value in config.__dict__.items():
+        try:
+            # Test if the value can be pickled
+            pickle.dumps(value)
+            config_dict[key] = value
+        except (TypeError, pickle.PicklingError):
+            # Skip non-serializable objects
+            config_dict[key] = f"<non-serializable: {type(value).__name__}>"
+    
     checkpoint = {
         'epoch': epoch,
         'model_state_dict': model.state_dict(),
@@ -265,42 +280,89 @@ def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, train_los
         'train_indices': train_indices,
         'val_indices': val_indices,
         'test_indices': test_indices,
-        'config': config.__dict__
+        'config': config_dict
     }
     
+    # Save checkpoint atomically to prevent corruption
     checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pt"
-    torch.save(checkpoint, checkpoint_path)
+    temp_path = checkpoint_dir / f"temp_checkpoint_epoch_{epoch}.pt"
+    
+    try:
+        # Save to temporary file first
+        torch.save(checkpoint, temp_path)
+        # Then move to final location (atomic operation)
+        temp_path.replace(checkpoint_path)
+        print(f"Checkpoint saved: {checkpoint_path}")
+    except Exception as e:
+        print(f"Error saving checkpoint: {e}")
+        # Clean up temporary file if it exists
+        if temp_path.exists():
+            temp_path.unlink()
+        raise e
     
     # Also save indices separately for easy access
     indices_path = checkpoint_dir / f"indices_epoch_{epoch}.pkl"
-    with open(indices_path, 'wb') as f:
-        pickle.dump({
-            'train_indices': train_indices,
-            'val_indices': val_indices,
-            'test_indices': test_indices
-        }, f)
+    temp_indices_path = checkpoint_dir / f"temp_indices_epoch_{epoch}.pkl"
     
-    print(f"Checkpoint saved: {checkpoint_path}")
+    try:
+        with open(temp_indices_path, 'wb') as f:
+            pickle.dump({
+                'train_indices': train_indices,
+                'val_indices': val_indices,
+                'test_indices': test_indices
+            }, f)
+        temp_indices_path.replace(indices_path)
+    except Exception as e:
+        print(f"Error saving indices: {e}")
+        if temp_indices_path.exists():
+            temp_indices_path.unlink()
+    
     return checkpoint_path
 
 def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
-    """Load training checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    
-    model.load_state_dict(checkpoint['model_state_dict'])
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-    
-    epoch = checkpoint['epoch']
-    best_val_loss = checkpoint['best_val_loss']
-    train_losses = checkpoint['train_losses']
-    val_losses = checkpoint['val_losses']
-    train_indices = checkpoint['train_indices']
-    val_indices = checkpoint['train_indices']
-    test_indices = checkpoint['test_indices']
-    
-    print(f"Checkpoint loaded from epoch {epoch} with best val loss: {best_val_loss:.4f}")
-    return epoch, best_val_loss, train_losses, val_losses, train_indices, val_indices, test_indices
+    """Load training checkpoint with error handling."""
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        epoch = checkpoint['epoch']
+        best_val_loss = checkpoint['best_val_loss']
+        train_losses = checkpoint['train_losses']
+        val_losses = checkpoint['val_losses']
+        train_indices = checkpoint['train_indices']
+        val_indices = checkpoint['val_indices']
+        test_indices = checkpoint['test_indices']
+        
+        print(f"Checkpoint loaded from epoch {epoch} with best val loss: {best_val_loss:.4f}")
+        return epoch, best_val_loss, train_losses, val_losses, train_indices, val_indices, test_indices
+        
+    except Exception as e:
+        print(f"Error loading checkpoint {checkpoint_path}: {e}")
+        print("Checkpoint file appears to be corrupted. Attempting to find previous checkpoint...")
+        
+        # Try to find a previous checkpoint
+        checkpoint_dir = Path(checkpoint_path).parent
+        checkpoint_files = list(checkpoint_dir.glob("checkpoint_epoch_*.pt"))
+        checkpoint_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
+        
+        # Remove the corrupted checkpoint
+        try:
+            Path(checkpoint_path).unlink()
+            print(f"Removed corrupted checkpoint: {checkpoint_path}")
+        except:
+            pass
+        
+        # Try the previous checkpoint
+        if len(checkpoint_files) > 1:
+            previous_checkpoint = checkpoint_files[-2]  # Second to last
+            print(f"Trying previous checkpoint: {previous_checkpoint}")
+            return load_checkpoint(previous_checkpoint, model, optimizer, scheduler)
+        else:
+            print("No previous checkpoint found. Starting fresh training.")
+            raise ValueError("No valid checkpoint found")
 
 def find_latest_checkpoint(checkpoint_dir="./checkpoints"):
     """Find the latest checkpoint file."""
@@ -483,14 +545,25 @@ def main_training_loop():
     if latest_checkpoint is not None:
         print(f"Found existing checkpoint: {latest_checkpoint}")
         print("Resuming from checkpoint...")
-        start_epoch, best_val_loss, train_losses, val_losses, train_indices, val_indices, test_indices = load_checkpoint(
-            latest_checkpoint, model, optimizer, scheduler
-        )
-        start_epoch += 1  # Start from next epoch
-        print(f"Resuming from epoch {start_epoch}")
+        try:
+            start_epoch, best_val_loss, train_losses, val_losses, train_indices, val_indices, test_indices = load_checkpoint(
+                latest_checkpoint, model, optimizer, scheduler
+            )
+            start_epoch += 1  # Start from next epoch
+            print(f"Resuming from epoch {start_epoch}")
+        except Exception as e:
+            print(f"Failed to load checkpoint: {e}")
+            print("Starting fresh training...")
+            start_epoch = 0
+            best_val_loss = float('inf')
+            train_losses = []
+            val_losses = []
     else:
         print("No checkpoint found. Starting fresh training...")
+        start_epoch = 0
         best_val_loss = float('inf')
+        train_losses = []
+        val_losses = []
     
     # Training loop
     print("Starting training...")
