@@ -451,53 +451,7 @@ def main_training_loop():
     # Training loop
     print("Starting training...")
     
-    # Add diagnostic prints
-    print(f"[DEBUG] About to start training loop with {len(train_loader)} batches")
-    print(f"[DEBUG] First batch will be created now...")
-    
-    # Test DataLoader iteration
-    print(f"[DEBUG] Testing DataLoader iteration...")
-    try:
-        first_batch_from_loader = next(iter(train_loader))
-        print(f"[DEBUG] Successfully got first batch from DataLoader with keys: {list(first_batch_from_loader.keys())}")
-        
-        # Test getting second batch
-        print(f"[DEBUG] Testing second batch...")
-        train_iter = iter(train_loader)
-        second_batch = next(train_iter)
-        print(f"[DEBUG] Successfully got second batch from DataLoader")
-        
-        # Test manual iteration without enumerate
-        print(f"[DEBUG] Testing manual iteration...")
-        train_iter2 = iter(train_loader)
-        for i in range(3):  # Test first 3 batches
-            batch = next(train_iter2)
-            print(f"[DEBUG] Successfully got batch {i+1} manually")
-        print(f"[DEBUG] Manual iteration test completed successfully")
-        
-    except Exception as e:
-        print(f"[DEBUG] Error getting batch from DataLoader: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # Try with a smaller batch size
-        print(f"[DEBUG] Trying with batch size 1...")
-        try:
-            test_loader = PyGDataLoader(
-                train_subset, 
-                batch_size=1, 
-                shuffle=False, 
-                collate_fn=custom_collate_fn, 
-                num_workers=0
-            )
-            test_batch = next(iter(test_loader))
-            print(f"[DEBUG] Successfully got test batch with batch_size=1: {list(test_batch.keys())}")
-        except Exception as e2:
-            print(f"[DEBUG] Error with batch_size=1: {e2}")
-            import traceback
-            traceback.print_exc()
-        
-        return None
+    print("Starting training...")
     
     best_val_loss = float('inf')
     patience_counter = 0
@@ -507,93 +461,50 @@ def main_training_loop():
         model.train()
         train_losses = []
         
-        print(f"[DEBUG] Starting epoch {epoch+1}/{config.NUM_EPOCHS}")
-        print(f"[DEBUG] About to iterate through {len(train_loader)} batches")
+        print(f"Starting epoch {epoch+1}/{config.NUM_EPOCHS}")
         
-        # Use manual iteration instead of enumerate to avoid the hang
-        train_iter = iter(train_loader)
-        batch_idx = 0
-        
-        while batch_idx < len(train_loader):
+        for batch_idx, batch in enumerate(train_loader):
             try:
-                batch = next(train_iter)
-                batch_start_time = time.time()
-                print(f"[TRAIN] Starting batch {batch_idx} of {len(train_loader)} (epoch {epoch+1})...")
-                try:
-                    print(f"[TRAIN] Batch {batch_idx}: Moving data to device...")
-                    device_start = time.time()
-                    # Move data to device
-                    for key in batch:
-                        if isinstance(batch[key], torch.Tensor):
-                            batch[key] = batch[key].to(device)
-                        elif hasattr(batch[key], 'batch'):  # Check if it's a PyG Batch object
-                            batch[key] = batch[key].to(device)
-                        elif isinstance(batch[key], dict):
-                            for sub_key in batch[key]:
-                                if isinstance(batch[key][sub_key], torch.Tensor):
-                                    batch[key][sub_key] = batch[key][sub_key].to(device)
-                    device_time = time.time() - device_start
-                    print(f"[TRAIN] Batch {batch_idx}: Data moved to device successfully in {device_time:.2f}s")
-                    
-                    # Forward pass
-                    print(f"[TRAIN] Batch {batch_idx}: Starting forward pass...")
-                    forward_start = time.time()
-                    optimizer.zero_grad()
-                    outputs = model(batch)
-                    forward_time = time.time() - forward_start
-                    print(f"[TRAIN] Batch {batch_idx}: Forward pass completed in {forward_time:.2f}s")
-                    
-                    print(f"[TRAIN] Batch {batch_idx}: Computing losses...")
-                    loss_start = time.time()
-                    losses = model.compute_enhanced_loss(outputs, {
-                        'combined': batch['combined_label'],
-                        'topology': batch['topology_label'],
-                        'magnetism': batch['magnetism_label']
-                    })
-                    loss_time = time.time() - loss_start
-                    print(f"[TRAIN] Batch {batch_idx}: Losses computed in {loss_time:.2f}s")
-                    
-                    # Backward pass
-                    print(f"[TRAIN] Batch {batch_idx}: Starting backward pass...")
-                    backward_start = time.time()
-                    losses['total_loss'].backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
-                    optimizer.step()
-                    backward_time = time.time() - backward_start
-                    print(f"[TRAIN] Batch {batch_idx}: Backward pass completed in {backward_time:.2f}s")
-                    
-                    total_batch_time = time.time() - batch_start_time
-                    print(f"[TRAIN] Batch {batch_idx}: Total batch time: {total_batch_time:.2f}s")
-                    
-                    train_losses.append(losses['total_loss'].item())
-                    if batch_idx % 10 == 0:
-                        # Monitor GPU memory usage
-                        if device.type == 'cuda':
-                            gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**3
-                            gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3
-                            print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
-                                  f"Loss: {losses['total_loss'].item():.4f}, "
-                                  f"GPU Memory: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached")
-                        else:
-                            print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
-                                  f"Loss: {losses['total_loss'].item():.4f}")
-                except Exception as e:
-                    print(f"ERROR in training batch {batch_idx}: {e}")
-                    print(f"Batch keys: {list(batch.keys())}")
-                    import traceback
-                    traceback.print_exc()
+                # Move data to device
+                for key in batch:
+                    if isinstance(batch[key], torch.Tensor):
+                        batch[key] = batch[key].to(device)
+                    elif hasattr(batch[key], 'batch'):  # Check if it's a PyG Batch object
+                        batch[key] = batch[key].to(device)
+                    elif isinstance(batch[key], dict):
+                        for sub_key in batch[key]:
+                            if isinstance(batch[key][sub_key], torch.Tensor):
+                                batch[key][sub_key] = batch[key][sub_key].to(device)
                 
-                print(f"[TRAIN] Finished batch {batch_idx} of {len(train_loader)} (epoch {epoch+1})")
-                batch_idx += 1
+                # Forward pass
+                optimizer.zero_grad()
+                outputs = model(batch)
+                losses = model.compute_enhanced_loss(outputs, {
+                    'combined': batch['combined_label'],
+                    'topology': batch['topology_label'],
+                    'magnetism': batch['magnetism_label']
+                })
                 
-            except StopIteration:
-                print(f"[DEBUG] Reached end of DataLoader at batch {batch_idx}")
-                break
+                # Backward pass
+                losses['total_loss'].backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
+                optimizer.step()
+                train_losses.append(losses['total_loss'].item())
+                
+                if batch_idx % 10 == 0:
+                    # Monitor GPU memory usage
+                    if device.type == 'cuda':
+                        gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**3
+                        gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3
+                        print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
+                              f"Loss: {losses['total_loss'].item():.4f}, "
+                              f"GPU Memory: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached")
+                    else:
+                        print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
+                              f"Loss: {losses['total_loss'].item():.4f}")
             except Exception as e:
-                print(f"ERROR in DataLoader iteration at batch {batch_idx}: {e}")
-                import traceback
-                traceback.print_exc()
-                break
+                print(f"ERROR in training batch {batch_idx}: {e}")
+                continue
         
         # Validation phase
         model.eval()

@@ -77,7 +77,7 @@ FFNN_HIDDEN_DIMS_SCALAR = [256, 128]
 
 # --- Training Parameters ---
 LEARNING_RATE = 0.001
-BATCH_SIZE = 8 # Reduced from 32 to speed up training
+BATCH_SIZE = 32 # Reduced from 32 to speed up training
 NUM_EPOCHS = 50
 DROPOUT_RATE = 0.2
 PATIENCE = 10
