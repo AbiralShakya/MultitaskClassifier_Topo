@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore", ".*is not in the top-level domain.*", UserWarn
 
 class MaterialDataset(Dataset):
     def __init__(self, master_index_path: Union[str, Path], kspace_graphs_base_dir: Union[str, Path],
-                 data_root_dir: Union[str, Path], dos_fermi_dir: Union[str, Path], scaler: Optional[StandardScaler] = None):
+                 data_root_dir: Union[str, Path], dos_fermi_dir: Union[str, Path], scaler: Optional[Dict[str, StandardScaler]] = None, preload: bool = True):
         """
         Args:
             master_index_path: Path to the directory containing individual JSON metadata files.
@@ -39,11 +39,14 @@ class MaterialDataset(Dataset):
                            Used to resolve relative paths in master_index.
             scaler: A pre-fitted StandardScaler for numerical features. If None, the dataset can be initialized
                     without a scaler, and one can be fitted and assigned later.
+            preload: If True, load all data into memory at initialization for faster training.
         """
         self.metadata_json_dir = Path(master_index_path)
         self.kspace_graphs_base_dir = Path(kspace_graphs_base_dir)
         self.data_root_dir = Path(data_root_dir) # Corrected back to data_root_dir, assuming that was the original variable name.
         self.dos_fermi_dir = Path(dos_fermi_dir)
+        self.preload = preload
+        self.cached_data = None
 
         if not self.metadata_json_dir.is_dir():
             raise NotADirectoryError(f"master_index_path must be a directory containing JSON files: {self.metadata_json_dir}")
@@ -93,8 +96,8 @@ class MaterialDataset(Dataset):
 
         initial_count = len(self.metadata_df)
         self.metadata_df = self.metadata_df[
-            self.metadata_df['topological_class'].isin(config.TOPOLOGY_CLASS_MAPPING.keys()) &
-            self.metadata_df['magnetic_type'].isin(config.MAGNETISM_CLASS_MAPPING.keys())
+            self.metadata_df['topological_class'].isin(list(config.TOPOLOGY_CLASS_MAPPING.keys())) &
+            self.metadata_df['magnetic_type'].isin(list(config.MAGNETISM_CLASS_MAPPING.keys()))
         ].reset_index(drop=True)
 
         if len(self.metadata_df) < initial_count:
@@ -141,29 +144,87 @@ class MaterialDataset(Dataset):
         self._asph_feature_dim = getattr(config, 'ASPH_FEATURE_DIM', 0)
         self._scalar_total_dim = getattr(config, 'SCALAR_TOTAL_DIM', len(self.scalar_features_columns) + getattr(config, 'BAND_REP_FEATURE_DIM', 0)) # Excludes band_gap here.
         
+        # Preload all data if requested
+        if self.preload:
+            print("Preloading all data into memory...")
+            self._preload_dataset()
+            print("Data preloading completed!")
+        
+    def _preload_dataset(self):
+        """Preload all data into memory for faster training."""
+        self.cached_data = []
+        total_samples = len(self.metadata_df)
+        
+        for idx in range(total_samples):
+            if idx % 100 == 0:
+                print(f"Preloading sample {idx}/{total_samples} ({idx/total_samples*100:.1f}%)")
+            
+            try:
+                data = self._load_sample(idx)
+                self.cached_data.append(data)
+            except Exception as e:
+                print(f"Error preloading sample {idx}: {e}")
+                # Create dummy data for failed samples
+                dummy_data = self._create_dummy_sample(idx)
+                self.cached_data.append(dummy_data)
+        
+        print(f"Successfully preloaded {len(self.cached_data)} samples")
+    
     def __len__(self) -> int:
         return len(self.metadata_df)
-
+    
     def _check_and_handle_nan_inf(self, tensor: torch.Tensor, feature_name: str, jid: str) -> torch.Tensor:
         """Helper to check for NaN/Inf and replace them with zeros, warning if found."""
         if torch.isnan(tensor).any() or torch.isinf(tensor).any():
             warnings.warn(f"NaN/Inf detected in {feature_name} for JID {jid}. Replacing with zeros.")
             tensor = torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
         return tensor
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        #print(f"[DATASET] __getitem__ start: idx={idx}")
+    
+    def _create_dummy_sample(self, idx: int) -> Dict[str, Any]:
+        """Create a dummy sample for failed data loading."""
         row = self.metadata_df.iloc[idx]
-        jid = row['jid'] 
-       #print(f"[DATASET] Loading JID: {jid} (idx={idx})")
+        jid = row['jid']
+        
+        return {
+            'jid': jid,
+            'crystal_graph': self._generate_dummy_crystal_graph(),
+            'asph_features': self._generate_dummy_asph_features(),
+            'kspace_graph': self._generate_dummy_kspace_graph(),
+            'kspace_physics_features': {
+                'decomposition_features': self._generate_dummy_base_decomposition_features(),
+                'gap_features': torch.zeros(config.BAND_GAP_SCALAR_DIM, dtype=torch.float),
+                'dos_features': torch.zeros(config.DOS_FEATURE_DIM, dtype=torch.float),
+                'fermi_features': torch.zeros(config.FERMI_FEATURE_DIM, dtype=torch.float),
+            },
+            'scalar_features': torch.zeros(self._scalar_total_dim, dtype=torch.float),
+            'topology_label': torch.tensor(self.topology_class_map.get(row['topological_class'], 0), dtype=torch.long),
+            'magnetism_label': torch.tensor(self.magnetism_class_map.get(row['magnetic_type'], 0), dtype=torch.long),
+        }
+    
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        """Get a sample from the dataset."""
+        if self.preload and self.cached_data is not None:
+            # Return preloaded data
+            return self.cached_data[idx]
+        else:
+            # Load data on-the-fly
+            return self._load_sample(idx)
+    
+    def _load_sample(self, idx: int) -> Dict[str, Any]:
+        """Load a single sample (moved from __getitem__ for preloading)."""
+        row = self.metadata_df.iloc[idx]
+        jid = row['jid']
 
         # --- 1. Load Crystal Graph ---
         crystal_graph_path = Path('/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs') / jid / 'crystal_graph.pkl'
         crystal_graph_dict = load_pickle_data(crystal_graph_path)
         crystal_graph = load_material_graph_from_dict(crystal_graph_dict)
-        crystal_graph.x = self._check_and_handle_nan_inf(crystal_graph.x, f"crystal_graph.x", jid)
-        crystal_graph.pos = self._check_and_handle_nan_inf(crystal_graph.pos, f"crystal_graph.pos", jid)
-        crystal_graph.edge_attr = self._check_and_handle_nan_inf(crystal_graph.edge_attr, f"crystal_graph.edge_attr", jid)
+        if crystal_graph.x is not None:
+            crystal_graph.x = self._check_and_handle_nan_inf(crystal_graph.x, f"crystal_graph.x", jid)
+        if crystal_graph.pos is not None:
+            crystal_graph.pos = self._check_and_handle_nan_inf(crystal_graph.pos, f"crystal_graph.pos", jid)
+        if crystal_graph.edge_attr is not None:
+            crystal_graph.edge_attr = self._check_and_handle_nan_inf(crystal_graph.edge_attr, f"crystal_graph.edge_attr", jid)
         
         # --- 2. Load ASPH Features ---
         asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / "asph_features_rev2.npy"

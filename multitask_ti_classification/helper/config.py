@@ -32,7 +32,10 @@ TOPOLOGY_CLASS_MAPPING = {
 }
 NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values()))
 
-NUM_WORKERS = 4
+NUM_WORKERS = 8
+
+# --- Data Loading Configuration ---
+PRELOAD_DATASET = True  # Enable preloading for faster training
 
 # --- Magnetism Classification ---
 MAGNETISM_CLASS_MAPPING = {
@@ -55,11 +58,11 @@ crystal_encoder_output_dim = 128
 
 # Topological ML parameters
 AUXILIARY_WEIGHT = 0.1 # Weight for auxiliary topological ML loss
-crystal_encoder_hidden_dim = 128
-crystal_encoder_num_layers = 6
-crystal_encoder_radius = 4.0
-crystal_encoder_num_scales = 3
-crystal_encoder_use_topological_features = True
+crystal_encoder_hidden_dim = 64  # Reduced from 128
+crystal_encoder_num_layers = 3   # Reduced from 6
+crystal_encoder_radius = 3.0     # Reduced from 4.0
+crystal_encoder_num_scales = 1   # Reduced from 3 (disable multi-scale)
+crystal_encoder_use_topological_features = False  # Disable expensive topological feature extraction
 
 FUSION_HIDDEN_DIMS = [256, 128]
 
@@ -74,7 +77,7 @@ FFNN_HIDDEN_DIMS_SCALAR = [256, 128]
 
 # --- Training Parameters ---
 LEARNING_RATE = 0.001
-BATCH_SIZE = 32  # Reduced from 256 to 64 to prevent memory issues
+BATCH_SIZE = 8 # Reduced from 32 to speed up training
 NUM_EPOCHS = 50
 DROPOUT_RATE = 0.2
 PATIENCE = 10
@@ -104,7 +107,7 @@ TEST_RATIO = 0.1
 # --- Feature Dimensions ---
 CRYSTAL_NODE_FEATURE_DIM = 3  # actual crystal graph node feature dimension from data
 CRYSTAL_EDGE_FEATURE_DIM = 1  # e.g., binned distance
-ASPH_FEATURE_DIM = 3115
+ASPH_FEATURE_DIM = 512
 KSPACE_NODE_FEATURE_DIM = 10  # updated to match your k-space node feature dim
 KSPACE_EDGE_FEATURE_DIM = 4   # adjust to your k-space edge feature dim
 KSPACE_GRAPH_NODE_FEATURE_DIM = 10  # k-space graph node feature dimension
