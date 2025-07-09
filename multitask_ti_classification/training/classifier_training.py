@@ -27,14 +27,16 @@ from helper.topological_crystal_encoder import TopologicalCrystalEncoder
 from src.model_w_debug import KSpaceTransformerGNNEncoder, ScalarFeatureEncoder
 from helper.kspace_physics_encoders import EnhancedKSpacePhysicsFeatures
 from encoders.ph_token_encoder import PHTokenEncoder
-# Spectral graph features
-from helper.graph_spectral_encoder import GraphSpectralEncoder
+# GPU-accelerated spectral graph features
+from helper.gpu_spectral_encoder import GPUSpectralEncoder, FastSpectralEncoder
 # REMOVED: Topological ML encoder (expensive synthetic Hamiltonian generation)
 # from src.topological_ml_encoder import (
 #     TopologicalMLEncoder, TopologicalMLEncoder2D,
 #     create_hamiltonian_from_features, compute_topological_loss
 # )
 import helper.config as config
+import pickle
+import gc
 
 class EnhancedMultiModalMaterialClassifier(nn.Module):
     def __init__(
@@ -119,7 +121,8 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             fermi_features_dim=config.FERMI_FEATURE_DIM,
             output_dim=latent_dim_other_ffnn
         )
-        self.spectral_encoder = GraphSpectralEncoder(
+        # Use GPU-accelerated spectral encoder (much faster than CPU SciPy)
+        self.spectral_encoder = GPUSpectralEncoder(
             k_eigs=config.K_LAPLACIAN_EIGS,
             hidden=spectral_hidden
         )
@@ -155,11 +158,16 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             dos_features=inputs['kspace_physics_features'].get('dos_features'),
             fermi_features=inputs['kspace_physics_features'].get('fermi_features')
         )
-        spec_emb      = self.spectral_encoder(
-            inputs['crystal_graph'].edge_index,
-            inputs['crystal_graph'].num_nodes,
-            getattr(inputs['crystal_graph'], 'batch', None)
-        ) 
+        # Smart spectral encoding with caching
+        try:
+            spec_emb = self.spectral_encoder(
+                inputs['crystal_graph'].edge_index,
+                inputs['crystal_graph'].num_nodes,
+                getattr(inputs['crystal_graph'], 'batch', None)
+            )
+        except Exception as e:
+            print(f"Warning: Spectral encoding failed, using zeros: {e}")
+            spec_emb = torch.zeros(kspace_emb.shape[0], self._spec_dim, device=kspace_emb.device) 
 
         # REMOVED: Topological ML features (expensive synthetic Hamiltonian generation)
         ml_emb, ml_logits = None, None
@@ -239,6 +247,74 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         losses['total_loss'] = sum(losses.values())
         return losses
 
+
+def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, train_losses, val_losses, 
+                   train_indices, val_indices, test_indices, checkpoint_dir="./checkpoints"):
+    """Save training checkpoint."""
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    checkpoint = {
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_val_loss': best_val_loss,
+        'train_losses': train_losses,
+        'val_losses': val_losses,
+        'train_indices': train_indices,
+        'val_indices': val_indices,
+        'test_indices': test_indices,
+        'config': config.__dict__
+    }
+    
+    checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch}.pt"
+    torch.save(checkpoint, checkpoint_path)
+    
+    # Also save indices separately for easy access
+    indices_path = checkpoint_dir / f"indices_epoch_{epoch}.pkl"
+    with open(indices_path, 'wb') as f:
+        pickle.dump({
+            'train_indices': train_indices,
+            'val_indices': val_indices,
+            'test_indices': test_indices
+        }, f)
+    
+    print(f"Checkpoint saved: {checkpoint_path}")
+    return checkpoint_path
+
+def load_checkpoint(checkpoint_path, model, optimizer, scheduler):
+    """Load training checkpoint."""
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+    
+    epoch = checkpoint['epoch']
+    best_val_loss = checkpoint['best_val_loss']
+    train_losses = checkpoint['train_losses']
+    val_losses = checkpoint['val_losses']
+    train_indices = checkpoint['train_indices']
+    val_indices = checkpoint['train_indices']
+    test_indices = checkpoint['test_indices']
+    
+    print(f"Checkpoint loaded from epoch {epoch} with best val loss: {best_val_loss:.4f}")
+    return epoch, best_val_loss, train_losses, val_losses, train_indices, val_indices, test_indices
+
+def find_latest_checkpoint(checkpoint_dir="./checkpoints"):
+    """Find the latest checkpoint file."""
+    checkpoint_dir = Path(checkpoint_dir)
+    if not checkpoint_dir.exists():
+        return None
+    
+    checkpoint_files = list(checkpoint_dir.glob("checkpoint_epoch_*.pt"))
+    if not checkpoint_files:
+        return None
+    
+    # Sort by epoch number
+    checkpoint_files.sort(key=lambda x: int(x.stem.split('_')[-1]))
+    return checkpoint_files[-1]
 
 def main_training_loop():
     """
@@ -395,15 +471,33 @@ def main_training_loop():
     optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE)
     scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
     
+    # Checkpoint functionality
+    checkpoint_dir = "./checkpoints"
+    checkpoint_frequency = 5  # Save every 5 epochs
+    start_epoch = 0
+    train_losses = []
+    val_losses = []
+    
+    # Check for existing checkpoint
+    latest_checkpoint = find_latest_checkpoint(checkpoint_dir)
+    if latest_checkpoint is not None:
+        print(f"Found existing checkpoint: {latest_checkpoint}")
+        print("Resuming from checkpoint...")
+        start_epoch, best_val_loss, train_losses, val_losses, train_indices, val_indices, test_indices = load_checkpoint(
+            latest_checkpoint, model, optimizer, scheduler
+        )
+        start_epoch += 1  # Start from next epoch
+        print(f"Resuming from epoch {start_epoch}")
+    else:
+        print("No checkpoint found. Starting fresh training...")
+        best_val_loss = float('inf')
+    
     # Training loop
     print("Starting training...")
     
-    print("Starting training...")
-    
-    best_val_loss = float('inf')
     patience_counter = 0
     
-    for epoch in range(config.NUM_EPOCHS):
+    for epoch in range(start_epoch, config.NUM_EPOCHS):
         # Training phase
         model.train()
         train_losses = []
@@ -449,6 +543,16 @@ def main_training_loop():
                     else:
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
                               f"Loss: {losses['total_loss'].item():.4f}")
+                
+                # Clear cache periodically to prevent memory buildup
+                if batch_idx % 25 == 0 and device.type == 'cuda':  # More frequent cleanup
+                    torch.cuda.empty_cache()
+                    # Clear spectral encoder cache to prevent memory buildup
+                    if hasattr(model.spectral_encoder, 'clear_cache'):
+                        model.spectral_encoder.clear_cache()
+                    # Force garbage collection
+                    import gc
+                    gc.collect()
             except Exception as e:
                 print(f"ERROR in training batch {batch_idx}: {e}")
                 continue
@@ -482,12 +586,27 @@ def main_training_loop():
         avg_train_loss = np.mean(train_losses)
         avg_val_loss = np.mean(val_losses)
         
+        # Append to loss history
+        train_losses.append(avg_train_loss)
+        val_losses.append(avg_val_loss)
+        
         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}: "
               f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        
+        # Save checkpoint every few epochs
+        if (epoch + 1) % checkpoint_frequency == 0:
+            save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, 
+                          train_losses, val_losses, train_indices, val_indices, test_indices, checkpoint_dir)
         
         # Clean up GPU memory between epochs
         if device.type == 'cuda':
             torch.cuda.empty_cache()
+            # Clear spectral encoder cache to prevent memory buildup
+            if hasattr(model.spectral_encoder, 'clear_cache'):
+                model.spectral_encoder.clear_cache()
+            # Force garbage collection
+            import gc
+            gc.collect()
             print(f"GPU memory after cleanup: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
         
         # Learning rate scheduling
