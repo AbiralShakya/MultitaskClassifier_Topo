@@ -29,11 +29,11 @@ from helper.kspace_physics_encoders import EnhancedKSpacePhysicsFeatures
 from encoders.ph_token_encoder import PHTokenEncoder
 # Spectral graph features
 from helper.graph_spectral_encoder import GraphSpectralEncoder
-# Optional ML-based topology encoder
-from src.topological_ml_encoder import (
-    TopologicalMLEncoder, TopologicalMLEncoder2D,
-    create_hamiltonian_from_features, compute_topological_loss
-)
+# REMOVED: Topological ML encoder (expensive synthetic Hamiltonian generation)
+# from src.topological_ml_encoder import (
+#     TopologicalMLEncoder, TopologicalMLEncoder2D,
+#     create_hamiltonian_from_features, compute_topological_loss
+# )
 import helper.config as config
 
 class EnhancedMultiModalMaterialClassifier(nn.Module):
@@ -124,33 +124,9 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             hidden=spectral_hidden
         )
 
-        # Topological ML encoder
-        self.use_topo_ml = use_topo_ml
-        self.topo_ml_aux_weight = topological_ml_auxiliary_weight
-        
-        if use_topo_ml:
-            if topological_ml_model_type == "1d_a3":
-                # Use the actual concatenated feature dimension (3659 from debug output)
-                # This is the sum of: 128 + 128 + 3115 + 128 + 128 + 32 = 3659
-                actual_input_dim = 3659
-                self.topo_ml_encoder = TopologicalMLEncoder(
-                    input_dim=actual_input_dim,
-                    k_points=topological_ml_k_points,
-                    hidden_dims=[64,128,256],
-                    num_classes=num_topology_classes,
-                    output_features=topological_ml_dim,
-                    extract_local_features=True
-                )
-            else:
-                k_grid = int(topological_ml_k_points**0.5)
-                self.topo_ml_encoder = TopologicalMLEncoder2D(
-                    input_dim=3,
-                    k_grid=k_grid,
-                    hidden_dims=[32,64,128],
-                    num_classes=num_topology_classes,
-                    output_features=topological_ml_dim,
-                    extract_berry_curvature=True
-                )
+        # REMOVED: Topological ML encoder (expensive synthetic Hamiltonian generation)
+        self.use_topo_ml = False  # Disable topological ML
+        self.topo_ml_aux_weight = 0.0  # No auxiliary weight needed
 
         # Fusion MLP - will be dynamically created based on actual input dimensions
         self.fusion_hidden_dims = fusion_hidden_dims
@@ -185,17 +161,8 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             getattr(inputs['crystal_graph'], 'batch', None)
         ) 
 
-        # Optional Topological ML features
+        # REMOVED: Topological ML features (expensive synthetic Hamiltonian generation)
         ml_emb, ml_logits = None, None
-        if self.use_topo_ml:
-            raw = torch.cat([crystal_emb, kspace_emb, asph_emb, scalar_emb, phys_emb, spec_emb], dim=-1)
-            hams = create_hamiltonian_from_features(raw)
-            out = self.topo_ml_encoder(hams)
-            ml_emb    = out.get('topological_features')
-            # Fix the boolean tensor issue by properly checking for None
-            ml_logits = out.get('topological_logits')
-            if ml_logits is None:
-                ml_logits = out.get('chern_logits')
 
         # Concatenate all
         features = [crystal_emb, kspace_emb, asph_emb, scalar_emb, phys_emb, spec_emb]
@@ -203,18 +170,9 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             features.append(ml_emb)
         x = torch.cat(features, dim=-1)
         
-        # Debug: Print actual dimensions
-        print(f"DEBUG - Actual concatenated features shape: {x.shape}")
-        print(f"DEBUG - Expected base_dim: {self._crystal_dim + self._kspace_dim + self._asph_dim + self._scalar_dim + self._phys_dim + self._spec_dim + self._topo_ml_dim}")
-        print(f"DEBUG - Individual feature dimensions:")
-        print(f"  crystal_emb: {crystal_emb.shape}")
-        print(f"  kspace_emb: {kspace_emb.shape}")
-        print(f"  asph_emb: {asph_emb.shape}")
-        print(f"  scalar_emb: {scalar_emb.shape}")
-        print(f"  phys_emb: {phys_emb.shape}")
-        print(f"  spec_emb: {spec_emb.shape}")
-        if ml_emb is not None:
-            print(f"  ml_emb: {ml_emb.shape}")
+        # Feature dimensions for debugging (commented out for speed)
+        # print(f"DEBUG - Actual concatenated features shape: {x.shape}")
+        # print(f"DEBUG - Expected base_dim: {self._crystal_dim + self._kspace_dim + self._asph_dim + self._scalar_dim + self._phys_dim + self._spec_dim + self._topo_ml_dim}")
 
         # Dynamically create fusion network if not exists
         if self.fusion_network is None:
@@ -277,18 +235,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         losses['magnetism_loss'] = F.cross_entropy(
             predictions['magnetism_logits_aux'], targets['magnetism']
         )
-        if self.use_topo_ml:
-            ml_preds = {'topological_logits': predictions['topology_logits_primary']}
-            if ml_emb := predictions.get('topological_ml_features'):
-                ml_preds['topological_features'] = ml_emb
-            ml_losses = compute_topological_loss(
-                ml_preds, targets['topology'], auxiliary_weight=self.topo_ml_aux_weight
-            )
-            losses.update({
-                'ml_main': ml_losses['main_loss'],
-                'ml_feature': ml_losses['feature_loss'],
-                'ml_total': ml_losses['total_loss']
-            })
+        # REMOVED: Topological ML loss computation (expensive synthetic Hamiltonian generation)
         losses['total_loss'] = sum(losses.values())
         return losses
 
