@@ -34,30 +34,28 @@ class GPUSpectralEncoder(nn.Module):
     def _compute_eigenvalues_gpu(self, edge_index, num_nodes, device):
         """GPU-accelerated eigenvalue computation using PyTorch."""
         try:
-            # Build normalized Laplacian on GPU
+            # Ensure edge_index is in the correct format (long/int64)
+            edge_index = edge_index.long()
+            
+            # Build normalized Laplacian - keep everything on the same device
             laplacian_edge_index, laplacian_edge_weight = get_laplacian(
                 edge_index, normalization='sym', num_nodes=num_nodes
             )
             
-            # Convert to dense adjacency matrix on GPU
-            adj = to_dense_adj(laplacian_edge_index, laplacian_edge_weight, 
-                              max_num_nodes=num_nodes).squeeze(0).to(device)
+            # Convert to dense matrix directly on the target device
+            L = to_dense_adj(
+                laplacian_edge_index, 
+                laplacian_edge_weight, 
+                max_num_nodes=num_nodes
+            ).squeeze(0)
             
-            # Compute degree matrix
-            deg = torch.diag(torch.sum(adj, dim=1))
+            # Ensure L is on the correct device
+            L = L.to(device)
             
-            # Compute normalized Laplacian: L = I - D^(-1/2) A D^(-1/2)
-            deg_inv_sqrt = torch.pow(deg, -0.5)
-            deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
-            deg_inv_sqrt[torch.isnan(deg_inv_sqrt)] = 0
-            
-            L = torch.eye(num_nodes, device=device) - torch.mm(torch.mm(deg_inv_sqrt, adj), deg_inv_sqrt)
-            
-            # Add small regularization to ensure positive definiteness
+            # Add small regularization to ensure numerical stability
             L = L + 1e-6 * torch.eye(num_nodes, device=device)
             
             # Compute eigenvalues using PyTorch's GPU-accelerated eigendecomposition
-            # Use torch.linalg.eigh for symmetric matrices (much faster than eig)
             eigenvals, _ = torch.linalg.eigh(L)
             
             # Sort eigenvalues and take the k smallest non-zero ones
@@ -152,8 +150,12 @@ class FastSpectralEncoder(nn.Module):
     def _compute_approximate_eigenvalues(self, edge_index, num_nodes, device):
         """Fast approximate eigenvalue computation using power iteration."""
         try:
-            # Build adjacency matrix
-            adj = to_dense_adj(edge_index, max_num_nodes=num_nodes).squeeze(0).to(device)
+            # Ensure edge_index is in the correct format
+            edge_index = edge_index.long()
+            
+            # Build adjacency matrix directly on target device
+            adj = to_dense_adj(edge_index, max_num_nodes=num_nodes).squeeze(0)
+            adj = adj.to(device)
             
             # Compute degree matrix
             deg = torch.sum(adj, dim=1, keepdim=True)
@@ -232,4 +234,4 @@ class FastSpectralEncoder(nn.Module):
         """Clear the cache to free memory."""
         self.cache.clear()
         if hasattr(torch.cuda, 'empty_cache'):
-            torch.cuda.empty_cache() 
+            torch.cuda.empty_cache()

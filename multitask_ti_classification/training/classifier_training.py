@@ -620,8 +620,8 @@ def main_training_loop():
                 # Clear cache periodically to prevent memory buildup
                 if batch_idx % 25 == 0 and device.type == 'cuda':  # More frequent cleanup
                     torch.cuda.empty_cache()
-                    # Clear spectral encoder cache to prevent memory buildup
-                    if hasattr(model.spectral_encoder, 'clear_cache'):
+                    # Clear spectral encoder cache to prevent memory buildup (if available)
+                    if hasattr(model, 'spectral_encoder') and model.spectral_encoder is not None and hasattr(model.spectral_encoder, 'clear_cache'):
                         model.spectral_encoder.clear_cache()
                     # Force garbage collection
                     import gc
@@ -674,8 +674,8 @@ def main_training_loop():
         # Clean up GPU memory between epochs
         if device.type == 'cuda':
             torch.cuda.empty_cache()
-            # Clear spectral encoder cache to prevent memory buildup
-            if hasattr(model.spectral_encoder, 'clear_cache'):
+            # Clear spectral encoder cache to prevent memory buildup (if available)
+            if hasattr(model, 'spectral_encoder') and model.spectral_encoder is not None and hasattr(model.spectral_encoder, 'clear_cache'):
                 model.spectral_encoder.clear_cache()
             # Force garbage collection
             import gc
