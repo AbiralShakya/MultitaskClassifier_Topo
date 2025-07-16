@@ -21,6 +21,7 @@ import pickle
 import json
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from torch_geometric.data import Batch as PyGBatch
+from sklearn.metrics import accuracy_score
 
 # Core encoders
 from helper.topological_crystal_encoder import TopologicalCrystalEncoder
@@ -136,13 +137,13 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         self.dropout_rate = dropout_rate
         self.fusion_network = None  # Will be created in forward pass
 
-        # Output heads - will be created dynamically
+        # Output heads - initialize with placeholder input dim (will update in forward if needed)
         self.num_combined_classes = num_combined_classes
         self.num_topology_classes = num_topology_classes
         self.num_magnetism_classes = num_magnetism_classes
-        self.combined_head = None
-        self.topology_head_aux = None
-        self.magnetism_head_aux = None
+        self.combined_head = nn.Linear(1, self.num_combined_classes)
+        self.topology_head_aux = nn.Linear(1, self.num_topology_classes)
+        self.magnetism_head_aux = nn.Linear(1, self.num_magnetism_classes)
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         # Encode each modality
@@ -189,11 +190,10 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             layers = []
             in_dim = actual_input_dim
             for h in self.fusion_hidden_dims:
-                layers += [nn.Linear(in_dim, h), nn.BatchNorm1d(h), nn.ReLU(), nn.Dropout(self.dropout_rate)]
+                layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.ReLU(), nn.Dropout(self.dropout_rate)]
                 in_dim = h
             self.fusion_network = nn.Sequential(*layers).to(x.device)
-            
-            # Create output heads
+            # Update output heads to match new input dim
             self.combined_head = nn.Linear(in_dim, self.num_combined_classes).to(x.device)
             self.topology_head_aux = nn.Linear(in_dim, self.num_topology_classes).to(x.device)
             self.magnetism_head_aux = nn.Linear(in_dim, self.num_magnetism_classes).to(x.device)
@@ -574,6 +574,8 @@ def main_training_loop():
         # Training phase
         model.train()
         train_losses = []
+        train_correct = 0
+        train_total = 0
         
         print(f"Starting epoch {epoch+1}/{config.NUM_EPOCHS}")
         
@@ -599,6 +601,13 @@ def main_training_loop():
                     'magnetism': batch['magnetism_label']
                 })
                 
+                # Compute accuracy for this batch
+                preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
+                targets = batch['combined_label'].detach().cpu().numpy()
+                batch_acc = accuracy_score(targets, preds)
+                train_correct += (preds == targets).sum()
+                train_total += len(targets)
+                
                 # Backward pass
                 losses['total_loss'].backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
@@ -612,10 +621,11 @@ def main_training_loop():
                         gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
                               f"Loss: {losses['total_loss'].item():.4f}, "
+                              f"Acc: {batch_acc:.4f}, "
                               f"GPU Memory: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached")
                     else:
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
-                              f"Loss: {losses['total_loss'].item():.4f}")
+                              f"Loss: {losses['total_loss'].item():.4f}, Acc: {batch_acc:.4f}")
                 
                 # Clear cache periodically to prevent memory buildup
                 if batch_idx % 25 == 0 and device.type == 'cuda':  # More frequent cleanup
@@ -633,6 +643,8 @@ def main_training_loop():
         # Validation phase
         model.eval()
         val_losses = []
+        val_correct = 0
+        val_total = 0
         
         with torch.no_grad():
             for batch in val_loader:
@@ -655,16 +667,23 @@ def main_training_loop():
                 }
                 losses = model.compute_enhanced_loss(outputs, targets)
                 val_losses.append(losses['total_loss'].item())
+                # Compute accuracy for this batch
+                preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
+                targs = batch['combined_label'].detach().cpu().numpy()
+                val_correct += (preds == targs).sum()
+                val_total += len(targs)
         
         avg_train_loss = np.mean(train_losses)
         avg_val_loss = np.mean(val_losses)
-        
+        train_acc = train_correct / train_total if train_total > 0 else 0.0
+        val_acc = val_correct / val_total if val_total > 0 else 0.0
         # Append to loss history
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
         
         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}: "
-              f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+              f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
+              f"Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
         
         # Save checkpoint every few epochs
         if (epoch + 1) % checkpoint_frequency == 0:

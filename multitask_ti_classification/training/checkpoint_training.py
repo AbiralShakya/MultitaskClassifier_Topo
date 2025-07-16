@@ -22,6 +22,7 @@ import sys
 import traceback
 import pickle
 from typing import Dict, Any, List
+from sklearn.metrics import accuracy_score
 
 # Import the existing classifier
 from classifier_training import EnhancedMultiModalMaterialClassifier
@@ -227,6 +228,12 @@ def checkpoint_training_loop(checkpoint_dir="./checkpoints", checkpoint_frequenc
             return False
     
     # Create data loaders
+    if train_indices is None:
+        train_indices = []
+    if val_indices is None:
+        val_indices = []
+    if test_indices is None:
+        test_indices = []
     train_subset = Subset(dataset, train_indices)
     val_subset = Subset(dataset, val_indices)
     test_subset = Subset(dataset, test_indices)
@@ -265,6 +272,8 @@ def checkpoint_training_loop(checkpoint_dir="./checkpoints", checkpoint_frequenc
         # Training phase
         model.train()
         epoch_train_losses = []
+        epoch_train_correct = 0
+        epoch_train_total = 0
         
         for batch_idx, batch in enumerate(train_loader):
             try:
@@ -288,6 +297,13 @@ def checkpoint_training_loop(checkpoint_dir="./checkpoints", checkpoint_frequenc
                     'magnetism': batch['magnetism_label']
                 })
                 
+                # Compute accuracy for this batch
+                preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
+                targets = batch['combined_label'].detach().cpu().numpy()
+                batch_acc = accuracy_score(targets, preds)
+                epoch_train_correct += (preds == targets).sum()
+                epoch_train_total += len(targets)
+                
                 # Backward pass
                 losses['total_loss'].backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
@@ -301,10 +317,11 @@ def checkpoint_training_loop(checkpoint_dir="./checkpoints", checkpoint_frequenc
                         gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
                               f"Loss: {losses['total_loss'].item():.4f}, "
+                              f"Acc: {batch_acc:.4f}, "
                               f"GPU Memory: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached")
                     else:
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
-                              f"Loss: {losses['total_loss'].item():.4f}")
+                              f"Loss: {losses['total_loss'].item():.4f}, Acc: {batch_acc:.4f}")
                 
                 # Clear cache periodically to prevent memory buildup
                 if batch_idx % 25 == 0 and device.type == 'cuda':
@@ -322,6 +339,8 @@ def checkpoint_training_loop(checkpoint_dir="./checkpoints", checkpoint_frequenc
         # Validation phase
         model.eval()
         epoch_val_losses = []
+        epoch_val_correct = 0
+        epoch_val_total = 0
         
         with torch.no_grad():
             for batch in val_loader:
@@ -345,19 +364,25 @@ def checkpoint_training_loop(checkpoint_dir="./checkpoints", checkpoint_frequenc
                     }
                     losses = model.compute_enhanced_loss(outputs, targets)
                     epoch_val_losses.append(losses['total_loss'].item())
-                    
+                    # Compute accuracy for this batch
+                    preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
+                    targs = batch['combined_label'].detach().cpu().numpy()
+                    epoch_val_correct += (preds == targs).sum()
+                    epoch_val_total += len(targs)
                 except Exception as e:
                     print(f"ERROR in validation batch: {e}")
                     continue
         
         avg_train_loss = np.mean(epoch_train_losses) if epoch_train_losses else float('inf')
         avg_val_loss = np.mean(epoch_val_losses) if epoch_val_losses else float('inf')
-        
+        train_acc = epoch_train_correct / epoch_train_total if epoch_train_total > 0 else 0.0
+        val_acc = epoch_val_correct / epoch_val_total if epoch_val_total > 0 else 0.0
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
         
         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}: "
-              f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+              f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
+              f"Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
         
         # Clean up GPU memory between epochs
         if device.type == 'cuda':

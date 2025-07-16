@@ -7,7 +7,6 @@ This version computes eigenvalues on GPU for much faster training.
 
 import torch
 import torch.nn as nn
-from torch_geometric.utils import get_laplacian, to_dense_adj
 import hashlib
 
 class GPUSpectralEncoder(nn.Module):
@@ -31,29 +30,51 @@ class GPUSpectralEncoder(nn.Module):
         edge_hash = hashlib.md5(edge_index.cpu().numpy().tobytes()).hexdigest()
         return f"{edge_hash}_{num_nodes}"
 
+    def _build_adjacency_matrix(self, edge_index, num_nodes, device):
+        """Manually build adjacency matrix to avoid PyTorch Geometric dtype issues."""
+        # Ensure edge_index is in the correct format
+        edge_index = edge_index.long().to(device)
+        
+        # Initialize adjacency matrix
+        adj = torch.zeros(num_nodes, num_nodes, dtype=torch.float, device=device)
+        
+        # Fill adjacency matrix
+        row, col = edge_index
+        adj[row, col] = 1.0
+        adj[col, row] = 1.0  # Make it symmetric (undirected)
+        
+        return adj
+
+    def _build_laplacian_matrix(self, edge_index, num_nodes, device):
+        """Manually build normalized Laplacian matrix."""
+        # Build adjacency matrix
+        adj = self._build_adjacency_matrix(edge_index, num_nodes, device)
+        
+        # Compute degree matrix
+        deg = torch.sum(adj, dim=1, keepdim=True)
+        
+        # Handle isolated nodes (degree = 0)
+        deg_inv_sqrt = torch.pow(deg, -0.5)
+        deg_inv_sqrt[deg_inv_sqrt == float('inf')] = 0
+        deg_inv_sqrt[torch.isnan(deg_inv_sqrt)] = 0
+        
+        # Build normalized Laplacian: L = I - D^(-1/2) A D^(-1/2)
+        I = torch.eye(num_nodes, dtype=torch.float, device=device)
+        D_inv_sqrt = torch.diag(deg_inv_sqrt.squeeze())
+        
+        # L = I - D^(-1/2) A D^(-1/2)
+        L = I - torch.mm(torch.mm(D_inv_sqrt, adj), D_inv_sqrt)
+        
+        return L
+
     def _compute_eigenvalues_gpu(self, edge_index, num_nodes, device):
         """GPU-accelerated eigenvalue computation using PyTorch."""
         try:
-            # Ensure edge_index is in the correct format (long/int64)
-            edge_index = edge_index.long()
-            
-            # Build normalized Laplacian - keep everything on the same device
-            laplacian_edge_index, laplacian_edge_weight = get_laplacian(
-                edge_index, normalization='sym', num_nodes=num_nodes
-            )
-            
-            # Convert to dense matrix directly on the target device
-            L = to_dense_adj(
-                laplacian_edge_index, 
-                laplacian_edge_weight, 
-                max_num_nodes=num_nodes
-            ).squeeze(0)
-            
-            # Ensure L is on the correct device
-            L = L.to(device)
+            # Build normalized Laplacian matrix manually
+            L = self._build_laplacian_matrix(edge_index, num_nodes, device)
             
             # Add small regularization to ensure numerical stability
-            L = L + 1e-6 * torch.eye(num_nodes, device=device)
+            L = L + 1e-6 * torch.eye(num_nodes, dtype=torch.float, device=device)
             
             # Compute eigenvalues using PyTorch's GPU-accelerated eigendecomposition
             eigenvals, _ = torch.linalg.eigh(L)
@@ -107,6 +128,14 @@ class GPUSpectralEncoder(nn.Module):
         # Compute eigenvalues on GPU
         spec = self._compute_eigenvalues_gpu(edge_index, num_nodes, device)
         
+        # --- DEBUG: Print eigenvalues for first few calls ---
+        if not hasattr(self, '_print_count'):
+            self._print_count = 0
+        if self._print_count < 5:
+            print(f"[GPUSpectralEncoder] Eigenvalues (spec) for graph with {num_nodes} nodes:", spec.detach().cpu().numpy())
+            self._print_count += 1
+        # ---------------------------------------------------
+        
         # Process through MLP (already on correct device)
         result = self.mlp(spec.unsqueeze(0)).squeeze(0)
         
@@ -147,15 +176,26 @@ class FastSpectralEncoder(nn.Module):
         edge_hash = hashlib.md5(edge_index.cpu().numpy().tobytes()).hexdigest()
         return f"{edge_hash}_{num_nodes}"
 
+    def _build_adjacency_matrix(self, edge_index, num_nodes, device):
+        """Manually build adjacency matrix to avoid PyTorch Geometric dtype issues."""
+        # Ensure edge_index is in the correct format
+        edge_index = edge_index.long().to(device)
+        
+        # Initialize adjacency matrix
+        adj = torch.zeros(num_nodes, num_nodes, dtype=torch.float, device=device)
+        
+        # Fill adjacency matrix
+        row, col = edge_index
+        adj[row, col] = 1.0
+        adj[col, row] = 1.0  # Make it symmetric (undirected)
+        
+        return adj
+
     def _compute_approximate_eigenvalues(self, edge_index, num_nodes, device):
         """Fast approximate eigenvalue computation using power iteration."""
         try:
-            # Ensure edge_index is in the correct format
-            edge_index = edge_index.long()
-            
-            # Build adjacency matrix directly on target device
-            adj = to_dense_adj(edge_index, max_num_nodes=num_nodes).squeeze(0)
-            adj = adj.to(device)
+            # Build adjacency matrix manually
+            adj = self._build_adjacency_matrix(edge_index, num_nodes, device)
             
             # Compute degree matrix
             deg = torch.sum(adj, dim=1, keepdim=True)
