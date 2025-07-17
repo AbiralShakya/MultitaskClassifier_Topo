@@ -64,24 +64,24 @@ crystal_encoder_radius = 3.0     # Reduced from 4.0
 crystal_encoder_num_scales = 1   # Reduced from 3 (disable multi-scale)
 crystal_encoder_use_topological_features = False  # Disable expensive topological feature extraction
 
-FUSION_HIDDEN_DIMS = [256, 128]
+FUSION_HIDDEN_DIMS = [128, 64]  # Reduced from [256, 128] for more stable training
 
 # GNN specific
-GNN_NUM_LAYERS = 3
-GNN_HIDDEN_CHANNELS = 128
-KSPACE_GNN_NUM_HEADS = 8
+GNN_NUM_LAYERS = 2  # Reduced from 3 for less complexity
+GNN_HIDDEN_CHANNELS = 64  # Reduced from 128 for more stable training
+KSPACE_GNN_NUM_HEADS = 4  # Reduced from 8 for less complexity
 
 # FFNN specific
-FFNN_HIDDEN_DIMS_ASPH = [256, 128]
-FFNN_HIDDEN_DIMS_SCALAR = [256, 128]
+FFNN_HIDDEN_DIMS_ASPH = [128, 64]  # Reduced from [256, 128] for more stable training
+FFNN_HIDDEN_DIMS_SCALAR = [128, 64]  # Reduced from [256, 128] for more stable training
 
 # --- Training Parameters ---
-LEARNING_RATE = 0.001
+LEARNING_RATE = 1e-4  # Reduced from 0.001 for better stability
 BATCH_SIZE = 32 # Reduced from 32 to speed up training
 NUM_EPOCHS = 50
-DROPOUT_RATE = 0.2
-PATIENCE = 10
-MAX_GRAD_NORM = 1.0
+DROPOUT_RATE = 0.1  # Reduced from 0.2 for less regularization
+PATIENCE = 5  # Reduced from 10 for faster early stopping
+MAX_GRAD_NORM = 0.5  # Reduced from 1.0 for more conservative gradient clipping
 
 EGNN_HIDDEN_IRREPS_STR = "64x0e + 32x1o + 16x2e"
 EGNN_RADIUS = 3.0

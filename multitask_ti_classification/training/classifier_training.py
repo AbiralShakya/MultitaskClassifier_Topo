@@ -146,102 +146,108 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         self.magnetism_head_aux = nn.Linear(1, self.num_magnetism_classes)
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        # Encode each modality
-        crystal_emb, topo_aux_logits, _ = self.crystal_encoder(
-            inputs['crystal_graph'], return_topological_logits=True
-        )
-        kspace_emb    = self.kspace_encoder(inputs['kspace_graph'])
-        asph_emb      = self.asph_encoder(inputs['asph_features'])
-        scalar_emb    = self.scalar_encoder(inputs['scalar_features'])
-        phys_emb      = self.enhanced_kspace_physics_encoder(
-            decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
-            gap_features=inputs['kspace_physics_features'].get('gap_features'),
-            dos_features=inputs['kspace_physics_features'].get('dos_features'),
-            fermi_features=inputs['kspace_physics_features'].get('fermi_features')
-        )
-        # Smart spectral encoding with caching
         try:
-            spec_emb = self.spectral_encoder(
-                inputs['crystal_graph'].edge_index,
-                inputs['crystal_graph'].num_nodes,
-                getattr(inputs['crystal_graph'], 'batch', None)
+            # Encode each modality
+            crystal_emb, topo_aux_logits, _ = self.crystal_encoder(
+                inputs['crystal_graph'], return_topological_logits=True
             )
-        except Exception as e:
-            print(f"Warning: Spectral encoding failed, using zeros: {e}")
-            spec_emb = torch.zeros(kspace_emb.shape[0], self._spec_dim, device=kspace_emb.device) 
+            kspace_emb    = self.kspace_encoder(inputs['kspace_graph'])
+            asph_emb      = self.asph_encoder(inputs['asph_features'])
+            scalar_emb    = self.scalar_encoder(inputs['scalar_features'])
+            phys_emb      = self.enhanced_kspace_physics_encoder(
+                decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
+                gap_features=inputs['kspace_physics_features'].get('gap_features'),
+                dos_features=inputs['kspace_physics_features'].get('dos_features'),
+                fermi_features=inputs['kspace_physics_features'].get('fermi_features')
+            )
+            # Smart spectral encoding with caching
+            try:
+                spec_emb = self.spectral_encoder(
+                    inputs['crystal_graph'].edge_index,
+                    inputs['crystal_graph'].num_nodes,
+                    getattr(inputs['crystal_graph'], 'batch', None)
+                )
+            except Exception as e:
+                print(f"Warning: Spectral encoding failed, using zeros: {e}")
+                spec_emb = torch.zeros(kspace_emb.shape[0], self._spec_dim, device=kspace_emb.device) 
 
-        # REMOVED: Topological ML features (expensive synthetic Hamiltonian generation)
-        ml_emb, ml_logits = None, None
+            # REMOVED: Topological ML features (expensive synthetic Hamiltonian generation)
+            ml_emb, ml_logits = None, None
 
-        # Concatenate all
-        features = [crystal_emb, kspace_emb, asph_emb, scalar_emb, phys_emb, spec_emb]
-        if ml_emb is not None:
-            features.append(ml_emb)
-        x = torch.cat(features, dim=-1)
-        
-        # Feature dimensions for debugging (commented out for speed)
-        # print(f"DEBUG - Actual concatenated features shape: {x.shape}")
-        # print(f"DEBUG - Expected base_dim: {self._crystal_dim + self._kspace_dim + self._asph_dim + self._scalar_dim + self._phys_dim + self._spec_dim + self._topo_ml_dim}")
-
-        # Dynamically create fusion network if not exists
-        if self.fusion_network is None:
-            actual_input_dim = x.shape[1]
-            print(f"Creating fusion network with input dimension: {actual_input_dim}")
-            layers = []
-            in_dim = actual_input_dim
-            for h in self.fusion_hidden_dims:
-                layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.ReLU(), nn.Dropout(self.dropout_rate)]
-                in_dim = h
-            self.fusion_network = nn.Sequential(*layers).to(x.device)
-            # Update output heads to match new input dim
-            self.combined_head = nn.Linear(in_dim, self.num_combined_classes).to(x.device)
-            self.topology_head_aux = nn.Linear(in_dim, self.num_topology_classes).to(x.device)
-            self.magnetism_head_aux = nn.Linear(in_dim, self.num_magnetism_classes).to(x.device)
-
-        # Fuse and predict with safety checks
-        try:
-            # Check for NaN or infinite values
-            if torch.isnan(x).any() or torch.isinf(x).any():
-                print("WARNING: NaN or infinite values detected in input features!")
-                x = torch.nan_to_num(x, nan=0.0, posinf=1.0, neginf=-1.0)
+            # Concatenate all
+            features = [crystal_emb, kspace_emb, asph_emb, scalar_emb, phys_emb, spec_emb]
+            if ml_emb is not None:
+                features.append(ml_emb)
+            x = torch.cat(features, dim=-1)
             
+            # --- ADD FEATURE NORMALIZATION ---
+            # Normalize features to prevent gradient explosion
+            x = F.layer_norm(x, x.shape[1:])
+            
+            # --- ADD DEBUGGING FOR FIRST FEW BATCHES ---
+            if not hasattr(self, '_debug_count'):
+                self._debug_count = 0
+            if self._debug_count < 3:
+                print(f"[DEBUG] Feature stats - min: {x.min():.4f}, max: {x.max():.4f}, mean: {x.mean():.4f}, std: {x.std():.4f}")
+                self._debug_count += 1
+            # ---------------------------------------------------
+
+            # Dynamically create fusion network if not exists
+            if self.fusion_network is None:
+                actual_input_dim = x.shape[1]
+                print(f"Creating fusion network with input dimension: {actual_input_dim}")
+                layers = []
+                in_dim = actual_input_dim
+                for h in self.fusion_hidden_dims:
+                    layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.ReLU(), nn.Dropout(self.dropout_rate)]
+                    in_dim = h
+                self.fusion_network = nn.Sequential(*layers).to(x.device)
+                # Update output heads to match new input dim
+                self.combined_head = nn.Linear(in_dim, self.num_combined_classes).to(x.device)
+                self.topology_head_aux = nn.Linear(in_dim, self.num_topology_classes).to(x.device)
+                self.magnetism_head_aux = nn.Linear(in_dim, self.num_magnetism_classes).to(x.device)
+
             fused = self.fusion_network(x)
             
-            # Check output for NaN or infinite values
-            if torch.isnan(fused).any() or torch.isinf(fused).any():
-                print("WARNING: NaN or infinite values detected in fusion output!")
-                fused = torch.nan_to_num(fused, nan=0.0, posinf=1.0, neginf=-1.0)
-                
-        except Exception as e:
-            print(f"ERROR in fusion network: {e}")
-            print(f"Input shape: {x.shape}")
-            print(f"Input stats - min: {x.min()}, max: {x.max()}, mean: {x.mean()}")
-            raise e
-        combined_logits    = self.combined_head(fused)
-        topology_primary   = ml_logits if ml_logits is not None else combined_logits
-        topology_aux       = topo_aux_logits
-        magnetism_aux      = self.magnetism_head_aux(fused)
+            # --- ADD GRADIENT CLIPPING TO FUSED FEATURES ---
+            fused = torch.clamp(fused, -10, 10)  # Prevent extreme values
+            
+            # --- ADD DEBUGGING FOR FUSED FEATURES ---
+            if self._debug_count < 3:
+                print(f"[DEBUG] Fused stats - min: {fused.min():.4f}, max: {fused.max():.4f}, mean: {fused.mean():.4f}, std: {fused.std():.4f}")
+            # ---------------------------------------------------
 
-        return {
-            'combined_logits': combined_logits,
-            'topology_logits_primary': topology_primary,
-            'topology_logits_auxiliary': topology_aux,
-            'magnetism_logits_aux': magnetism_aux
-        }
+            combined_logits    = self.combined_head(fused)
+            topology_primary   = self.topology_head_aux(fused)
+            topology_aux       = topo_aux_logits
+            magnetism_aux      = self.magnetism_head_aux(fused)
+
+            return {
+                'combined_logits': combined_logits,
+                'topology_logits_primary': topology_primary,
+                'topology_logits_auxiliary': topology_aux,
+                'magnetism_logits_aux': magnetism_aux
+            }
+        except Exception as e:
+            print(f"ERROR in forward pass: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
 
     def compute_enhanced_loss(self,
              predictions: Dict[str, torch.Tensor],
              targets: Dict[str, torch.Tensor]
     ) -> Dict[str, torch.Tensor]:
         losses = {}
-        losses['combined_loss'] = F.cross_entropy(predictions['combined_logits'], targets['combined'])
-        losses['topology_loss'] = F.cross_entropy(predictions['topology_logits_primary'], targets['topology'])
+        # Add label smoothing for better generalization
+        losses['combined_loss'] = F.cross_entropy(predictions['combined_logits'], targets['combined'], label_smoothing=0.1)
+        losses['topology_loss'] = F.cross_entropy(predictions['topology_logits_primary'], targets['topology'], label_smoothing=0.1)
         if predictions.get('topology_logits_auxiliary') is not None:
             losses['topology_aux_loss'] = F.cross_entropy(
-                predictions['topology_logits_auxiliary'], targets['topology']
+                predictions['topology_logits_auxiliary'], targets['topology'], label_smoothing=0.1
             )
         losses['magnetism_loss'] = F.cross_entropy(
-            predictions['magnetism_logits_aux'], targets['magnetism']
+            predictions['magnetism_logits_aux'], targets['magnetism'], label_smoothing=0.1
         )
         # REMOVED: Topological ML loss computation (expensive synthetic Hamiltonian generation)
         losses['total_loss'] = sum(losses.values())
@@ -529,9 +535,9 @@ def main_training_loop():
         import traceback
         traceback.print_exc()
     
-    # Setup optimizer and scheduler
-    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.5)
+    # Setup optimizer and scheduler using config values
+    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5, eps=1e-8)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=config.PATIENCE, factor=0.7, min_lr=1e-6)
     
     # Checkpoint functionality
     checkpoint_dir = "./checkpoints"
