@@ -45,7 +45,6 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         # Feature dims
         crystal_node_feature_dim: int,
         kspace_node_feature_dim: int,
-        asph_feature_dim: int,
         scalar_feature_dim: int,
         decomposition_feature_dim: int,
         # Class counts
@@ -64,8 +63,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         kspace_gnn_num_layers: int = config.GNN_NUM_LAYERS,
         kspace_gnn_num_heads: int = config.KSPACE_GNN_NUM_HEADS,
         latent_dim_gnn: int = config.LATENT_DIM_GNN,
-        # ASPH & scalar dims
-        latent_dim_asph: int = config.LATENT_DIM_ASPH,
+        # Scalar dims
         latent_dim_other_ffnn: int = config.LATENT_DIM_OTHER_FFNN,
         # Fusion MLP
         fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
@@ -83,7 +81,6 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         # Store dims for fusion
         self._crystal_dim  = crystal_encoder_output_dim
         self._kspace_dim   = latent_dim_gnn
-        self._asph_dim     = latent_dim_asph
         self._scalar_dim   = latent_dim_other_ffnn
         self._phys_dim     = latent_dim_other_ffnn
         self._spec_dim     = spectral_hidden
@@ -105,10 +102,6 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             out_channels=latent_dim_gnn,
             n_layers=kspace_gnn_num_layers,
             num_heads=kspace_gnn_num_heads
-        )
-        self.asph_encoder = PHTokenEncoder(
-            input_dim=asph_feature_dim,
-            output_dim=latent_dim_asph
         )
         self.scalar_encoder = ScalarFeatureEncoder(
             input_dim=scalar_feature_dim,
@@ -152,7 +145,6 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
                 inputs['crystal_graph'], return_topological_logits=True
             )
             kspace_emb    = self.kspace_encoder(inputs['kspace_graph'])
-            asph_emb      = self.asph_encoder(inputs['asph_features'])
             scalar_emb    = self.scalar_encoder(inputs['scalar_features'])
             phys_emb      = self.enhanced_kspace_physics_encoder(
                 decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
@@ -175,7 +167,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             ml_emb, ml_logits = None, None
 
             # Concatenate all
-            features = [crystal_emb, kspace_emb, asph_emb, scalar_emb, phys_emb, spec_emb]
+            features = [crystal_emb, kspace_emb, scalar_emb, phys_emb, spec_emb]
             if ml_emb is not None:
                 features.append(ml_emb)
             x = torch.cat(features, dim=-1)
@@ -504,7 +496,6 @@ def main_training_loop():
     model = EnhancedMultiModalMaterialClassifier(
         crystal_node_feature_dim=config.CRYSTAL_NODE_FEATURE_DIM,
         kspace_node_feature_dim=config.KSPACE_GRAPH_NODE_FEATURE_DIM,
-        asph_feature_dim=config.ASPH_FEATURE_DIM,
         scalar_feature_dim=config.SCALAR_TOTAL_DIM,
         decomposition_feature_dim=config.DECOMPOSITION_FEATURE_DIM,
         num_combined_classes=config.NUM_COMBINED_CLASSES,
@@ -724,4 +715,45 @@ def main_training_loop():
                 break
     
     print("Training completed!")
+    
+    # --- EVALUATE ON VALIDATION AND TEST SETS ---
+    from sklearn.metrics import f1_score, confusion_matrix, classification_report
+    def evaluate(loader, name):
+        model.eval()
+        all_preds = []
+        all_targets = []
+        with torch.no_grad():
+            for batch in loader:
+                # Move data to device
+                for key in batch:
+                    if isinstance(batch[key], torch.Tensor):
+                        batch[key] = batch[key].to(device)
+                    elif hasattr(batch[key], 'batch'):
+                        batch[key] = batch[key].to(device)
+                    elif isinstance(batch[key], dict):
+                        for sub_key in batch[key]:
+                            if isinstance(batch[key][sub_key], torch.Tensor):
+                                batch[key][sub_key] = batch[key][sub_key].to(device)
+                outputs = model(batch)
+                preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
+                targs = batch['combined_label'].detach().cpu().numpy()
+                all_preds.extend(preds)
+                all_targets.extend(targs)
+        print(f"\n=== {name.upper()} SET RESULTS ===")
+        print(f"Accuracy: {np.mean(np.array(all_preds) == np.array(all_targets)):.4f}")
+        print(f"F1 Score (macro): {f1_score(all_targets, all_preds, average='macro'):.4f}")
+        print(f"F1 Score (per class): {f1_score(all_targets, all_preds, average=None)}")
+        print(f"Confusion Matrix:\n{confusion_matrix(all_targets, all_preds)}")
+        print(classification_report(all_targets, all_preds, digits=4))
+    
+    evaluate(val_loader, "validation")
+    evaluate(test_loader, "test")
+    
+    # --- GPU MEMORY USAGE REPORT ---
+    if device.type == 'cuda':
+        max_mem = torch.cuda.max_memory_allocated(device) / 1024**3
+        print(f"\n[GPU] Max memory used during training: {max_mem:.2f} GB")
+        if max_mem < 1.0:
+            print("[WARNING] GPU memory usage is very low (<1GB). This may indicate your model or batch size is too small, or tensors are not being moved to the GPU. Consider increasing batch size or model complexity if appropriate.")
+    
     return model
