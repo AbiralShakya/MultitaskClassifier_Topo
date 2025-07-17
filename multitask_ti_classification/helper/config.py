@@ -25,12 +25,12 @@ DOS_FERMI_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/pe
 TOPOLOGY_CLASS_MAPPING = {
     "Trivial": 0,
     "Topological Insulator": 1,
-    "Semimetal": 2,
-    "Weyl Semimetal": 2,
-    "Dirac Semimetal": 2,
+    "Semimetal": 1,
+    "Weyl Semimetal": 1,
+    "Dirac Semimetal": 1,
     "Unknown": 0,
 }
-NUM_TOPOLOGY_CLASSES = len(set(TOPOLOGY_CLASS_MAPPING.values()))
+NUM_TOPOLOGY_CLASSES = 2
 
 NUM_WORKERS = 8
 

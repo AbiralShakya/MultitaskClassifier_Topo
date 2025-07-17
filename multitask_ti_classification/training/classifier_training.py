@@ -139,7 +139,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
 
         # Output heads - initialize with placeholder input dim (will update in forward if needed)
         self.num_combined_classes = num_combined_classes
-        self.num_topology_classes = num_topology_classes
+        self.num_topology_classes = config.NUM_TOPOLOGY_CLASSES
         self.num_magnetism_classes = num_magnetism_classes
         self.combined_head = nn.Linear(1, self.num_combined_classes)
         self.topology_head_aux = nn.Linear(1, self.num_topology_classes)
