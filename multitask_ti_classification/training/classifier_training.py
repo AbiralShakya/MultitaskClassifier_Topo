@@ -48,9 +48,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         scalar_feature_dim: int,
         decomposition_feature_dim: int,
         # Class counts
-        num_combined_classes: int = config.NUM_COMBINED_CLASSES,
         num_topology_classes: int = config.NUM_TOPOLOGY_CLASSES,
-        num_magnetism_classes: int = config.NUM_MAGNETISM_CLASSES,
         # Crystal encoder params
         crystal_encoder_hidden_dim: int = 128,
         crystal_encoder_num_layers: int = 4,
@@ -131,18 +129,14 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         self.fusion_network = None  # Will be created in forward pass
 
         # Output heads - initialize with placeholder input dim (will update in forward if needed)
-        self.num_combined_classes = num_combined_classes
-        self.num_topology_classes = config.NUM_TOPOLOGY_CLASSES
-        self.num_magnetism_classes = num_magnetism_classes
-        self.combined_head = nn.Linear(1, self.num_combined_classes)
-        self.topology_head_aux = nn.Linear(1, self.num_topology_classes)
-        self.magnetism_head_aux = nn.Linear(1, self.num_magnetism_classes)
+        self.num_topology_classes = num_topology_classes
+        self.topology_head = nn.Linear(1, self.num_topology_classes)
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         try:
             # Encode each modality
-            crystal_emb, topo_aux_logits, _ = self.crystal_encoder(
-                inputs['crystal_graph'], return_topological_logits=True
+            crystal_emb, _, _ = self.crystal_encoder(
+                inputs['crystal_graph'], return_topological_logits=False
             )
             kspace_emb    = self.kspace_encoder(inputs['kspace_graph'])
             scalar_emb    = self.scalar_encoder(inputs['scalar_features'])
@@ -195,9 +189,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
                     in_dim = h
                 self.fusion_network = nn.Sequential(*layers).to(x.device)
                 # Update output heads to match new input dim
-                self.combined_head = nn.Linear(in_dim, self.num_combined_classes).to(x.device)
-                self.topology_head_aux = nn.Linear(in_dim, self.num_topology_classes).to(x.device)
-                self.magnetism_head_aux = nn.Linear(in_dim, self.num_magnetism_classes).to(x.device)
+                self.topology_head = nn.Linear(in_dim, self.num_topology_classes).to(x.device)
 
             fused = self.fusion_network(x)
             
@@ -209,41 +201,17 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
                 print(f"[DEBUG] Fused stats - min: {fused.min():.4f}, max: {fused.max():.4f}, mean: {fused.mean():.4f}, std: {fused.std():.4f}")
             # ---------------------------------------------------
 
-            combined_logits    = self.combined_head(fused)
-            topology_primary   = self.topology_head_aux(fused)
-            topology_aux       = topo_aux_logits
-            magnetism_aux      = self.magnetism_head_aux(fused)
+            logits = self.topology_head(fused)
 
-            return {
-                'combined_logits': combined_logits,
-                'topology_logits_primary': topology_primary,
-                'topology_logits_auxiliary': topology_aux,
-                'magnetism_logits_aux': magnetism_aux
-            }
+            return {'logits': logits}
         except Exception as e:
             print(f"ERROR in forward pass: {e}")
             import traceback
             traceback.print_exc()
             raise e
 
-    def compute_enhanced_loss(self,
-             predictions: Dict[str, torch.Tensor],
-             targets: Dict[str, torch.Tensor]
-    ) -> Dict[str, torch.Tensor]:
-        losses = {}
-        # Add label smoothing for better generalization
-        losses['combined_loss'] = F.cross_entropy(predictions['combined_logits'], targets['combined'], label_smoothing=0.1)
-        losses['topology_loss'] = F.cross_entropy(predictions['topology_logits_primary'], targets['topology'], label_smoothing=0.1)
-        if predictions.get('topology_logits_auxiliary') is not None:
-            losses['topology_aux_loss'] = F.cross_entropy(
-                predictions['topology_logits_auxiliary'], targets['topology'], label_smoothing=0.1
-            )
-        losses['magnetism_loss'] = F.cross_entropy(
-            predictions['magnetism_logits_aux'], targets['magnetism'], label_smoothing=0.1
-        )
-        # REMOVED: Topological ML loss computation (expensive synthetic Hamiltonian generation)
-        losses['total_loss'] = sum(losses.values())
-        return losses
+    def compute_loss(self, predictions: Dict[str, torch.Tensor], targets: torch.Tensor) -> torch.Tensor:
+        return F.cross_entropy(predictions['logits'], targets, label_smoothing=0.1)
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, train_losses, val_losses, 
@@ -498,9 +466,7 @@ def main_training_loop():
         kspace_node_feature_dim=config.KSPACE_GRAPH_NODE_FEATURE_DIM,
         scalar_feature_dim=config.SCALAR_TOTAL_DIM,
         decomposition_feature_dim=config.DECOMPOSITION_FEATURE_DIM,
-        num_combined_classes=config.NUM_COMBINED_CLASSES,
-        num_topology_classes=config.NUM_TOPOLOGY_CLASSES,
-        num_magnetism_classes=config.NUM_MAGNETISM_CLASSES
+        num_topology_classes=config.NUM_TOPOLOGY_CLASSES
     ).to(device)
     print(f"[DEBUG] Model initialized successfully on device: {device}")
     
@@ -592,24 +558,20 @@ def main_training_loop():
                 # Forward pass
                 optimizer.zero_grad()
                 outputs = model(batch)
-                losses = model.compute_enhanced_loss(outputs, {
-                    'combined': batch['combined_label'],
-                    'topology': batch['topology_label'],
-                    'magnetism': batch['magnetism_label']
-                })
+                losses = model.compute_loss(outputs, batch['topology_label'])
                 
                 # Compute accuracy for this batch
-                preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
-                targets = batch['combined_label'].detach().cpu().numpy()
+                preds = outputs['logits'].argmax(dim=1).detach().cpu().numpy()
+                targets = batch['topology_label'].detach().cpu().numpy()
                 batch_acc = accuracy_score(targets, preds)
                 train_correct += (preds == targets).sum()
                 train_total += len(targets)
                 
                 # Backward pass
-                losses['total_loss'].backward()
+                losses.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
                 optimizer.step()
-                train_losses.append(losses['total_loss'].item())
+                train_losses.append(losses.item())
                 
                 if batch_idx % 10 == 0:
                     # Monitor GPU memory usage
@@ -617,12 +579,12 @@ def main_training_loop():
                         gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**3
                         gpu_memory_cached = torch.cuda.memory_reserved(device) / 1024**3
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
-                              f"Loss: {losses['total_loss'].item():.4f}, "
+                              f"Loss: {losses.item():.4f}, "
                               f"Acc: {batch_acc:.4f}, "
                               f"GPU Memory: {gpu_memory_used:.2f}GB used, {gpu_memory_cached:.2f}GB cached")
                     else:
                         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}, Batch {batch_idx}/{len(train_loader)}, "
-                              f"Loss: {losses['total_loss'].item():.4f}, Acc: {batch_acc:.4f}")
+                              f"Loss: {losses.item():.4f}, Acc: {batch_acc:.4f}")
                 
                 # Clear cache periodically to prevent memory buildup
                 if batch_idx % 25 == 0 and device.type == 'cuda':  # More frequent cleanup
@@ -657,16 +619,12 @@ def main_training_loop():
                                 batch[key][sub_key] = batch[key][sub_key].to(device)
                 
                 outputs = model(batch)
-                targets = {
-                    'combined': batch['combined_label'],
-                    'topology': batch['topology_label'],
-                    'magnetism': batch['magnetism_label']
-                }
-                losses = model.compute_enhanced_loss(outputs, targets)
-                val_losses.append(losses['total_loss'].item())
+                targets = batch['topology_label']
+                losses = model.compute_loss(outputs, targets)
+                val_losses.append(losses.item())
                 # Compute accuracy for this batch
-                preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
-                targs = batch['combined_label'].detach().cpu().numpy()
+                preds = outputs['logits'].argmax(dim=1).detach().cpu().numpy()
+                targs = batch['topology_label'].detach().cpu().numpy()
                 val_correct += (preds == targs).sum()
                 val_total += len(targs)
         
@@ -735,8 +693,8 @@ def main_training_loop():
                             if isinstance(batch[key][sub_key], torch.Tensor):
                                 batch[key][sub_key] = batch[key][sub_key].to(device)
                 outputs = model(batch)
-                preds = outputs['combined_logits'].argmax(dim=1).detach().cpu().numpy()
-                targs = batch['combined_label'].detach().cpu().numpy()
+                preds = outputs['logits'].argmax(dim=1).detach().cpu().numpy()
+                targs = batch['topology_label'].detach().cpu().numpy()
                 all_preds.extend(preds)
                 all_targets.extend(targs)
         print(f"\n=== {name.upper()} SET RESULTS ===")

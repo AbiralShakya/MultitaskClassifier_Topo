@@ -96,19 +96,18 @@ class MaterialDataset(Dataset):
 
         initial_count = len(self.metadata_df)
         self.metadata_df = self.metadata_df[
-            self.metadata_df['topological_class'].isin(list(config.TOPOLOGY_CLASS_MAPPING.keys())) &
-            self.metadata_df['magnetic_type'].isin(list(config.MAGNETISM_CLASS_MAPPING.keys()))
+            self.metadata_df['topological_class'].isin(list(config.TOPOLOGY_CLASS_MAPPING.keys()))
         ].reset_index(drop=True)
 
         if len(self.metadata_df) < initial_count:
-            print(f"Filtered out {initial_count - len(self.metadata_df)} materials due to undefined topological or magnetic types.")
+            print(f"Filtered out {initial_count - len(self.metadata_df)} materials due to undefined topological types.")
 
         self.space_group_manager = SpaceGroupManager(self.kspace_graphs_base_dir)
         # Scaler is now a dictionary to potentially hold separate scalers
         self.scaler = scaler 
 
         self.topology_class_map = config.TOPOLOGY_CLASS_MAPPING
-        self.magnetism_class_map = config.MAGNETISM_CLASS_MAPPING
+        #self.magnetism_class_map = config.MAGNETISM_CLASS_MAPPING
 
         # Updated scalar features columns, now excluding 'band_gap' if it's extracted separately
         self.scalar_features_columns = [
@@ -198,7 +197,7 @@ class MaterialDataset(Dataset):
             },
             'scalar_features': torch.zeros(self._scalar_total_dim, dtype=torch.float),
             'topology_label': torch.tensor(self.topology_class_map.get(row['topological_class'], 0), dtype=torch.long),
-            'magnetism_label': torch.tensor(self.magnetism_class_map.get(row['magnetic_type'], 0), dtype=torch.long),
+           # 'magnetism_label': torch.tensor(self.magnetism_class_map.get(row['magnetic_type'], 0), dtype=torch.long),
         }
     
     def __getitem__(self, idx: int) -> Dict[str, Any]:
@@ -457,9 +456,6 @@ class MaterialDataset(Dataset):
         topology_label_str = row['topological_class']
         topology_label = torch.tensor(self.topology_class_map.get(topology_label_str, self.topology_class_map["Unknown"]), dtype=torch.long)
         
-        magnetism_label_str = row['magnetic_type']
-        magnetism_label = torch.tensor(self.magnetism_class_map.get(magnetism_label_str, self.magnetism_class_map["UNKNOWN"]), dtype=torch.long)
-
         # --- Set Feature Dimensions in Config for Model Initialization (if not already set) ---
         if config.CRYSTAL_NODE_FEATURE_DIM is None or config.CRYSTAL_NODE_FEATURE_DIM == 0:
             config.CRYSTAL_NODE_FEATURE_DIM = crystal_graph.x.shape[1]
@@ -471,8 +467,7 @@ class MaterialDataset(Dataset):
             config.SCALAR_TOTAL_DIM = combined_scalar_features.shape[0]
 
         topo_int = topology_label.item()
-        mag_int  = magnetism_label.item()
-        cmb_int  = config.get_combined_label_from_ints(topo_int, mag_int)
+        cmb_int  = config.get_combined_label_from_ints(topo_int, 0) # Assuming magnetism is 0 for binary classification
         combined_label = torch.tensor(cmb_int, dtype=torch.long)
 
         # Ensure asph_features is a torch tensor
@@ -490,7 +485,6 @@ class MaterialDataset(Dataset):
             'kspace_physics_features': kspace_physics_features_dict,
             'scalar_features': combined_scalar_features,
             'topology_label': topology_label,
-            'magnetism_label': magnetism_label,
             'combined_label': combined_label,
             'jid': jid
         }

@@ -38,14 +38,7 @@ NUM_WORKERS = 8
 PRELOAD_DATASET = True  # Enable preloading for faster training
 
 # --- Magnetism Classification ---
-MAGNETISM_CLASS_MAPPING = {
-    "NM": 0,
-    "FM": 1,
-    "AFM": 2,
-    "FiM": 3,
-    "UNKNOWN": 0,
-}
-NUM_MAGNETISM_CLASSES = len(set(MAGNETISM_CLASS_MAPPING.values()))
+# Remove or ignore all magnetism-related mappings and class counts
 
 # --- Model Hyperparameters ---
 LATENT_DIM_GNN = 128
@@ -76,11 +69,11 @@ FFNN_HIDDEN_DIMS_ASPH = [128, 64]  # Reduced from [256, 128] for more stable tra
 FFNN_HIDDEN_DIMS_SCALAR = [128, 64]  # Reduced from [256, 128] for more stable training
 
 # --- Training Parameters ---
-LEARNING_RATE = 1e-4  # Reduced from 0.001 for better stability
-BATCH_SIZE = 32 # Reduced from 32 to speed up training
-NUM_EPOCHS = 50
+LEARNING_RATE = 1e-3  # Reduced from 0.001 for better stability
+BATCH_SIZE = 64 # Reduced from 32 to speed up training
+NUM_EPOCHS = 100
 DROPOUT_RATE = 0.1  # Reduced from 0.2 for less regularization
-PATIENCE = 5  # Reduced from 10 for faster early stopping
+PATIENCE = 20  # Reduced from 10 for faster early stopping
 MAX_GRAD_NORM = 0.5  # Reduced from 1.0 for more conservative gradient clipping
 
 EGNN_HIDDEN_IRREPS_STR = "64x0e + 32x1o + 16x2e"
