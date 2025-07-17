@@ -45,6 +45,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         # Feature dims
         crystal_node_feature_dim: int,
         kspace_node_feature_dim: int,
+        asph_feature_dim: int,
         scalar_feature_dim: int,
         decomposition_feature_dim: int,
         # Class counts
@@ -83,6 +84,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         self._phys_dim     = latent_dim_other_ffnn
         self._spec_dim     = spectral_hidden
         self._topo_ml_dim  = topological_ml_dim if use_topo_ml else 0
+        self._asph_dim     = asph_feature_dim
 
         # Instantiate encoders
         self.crystal_encoder = TopologicalCrystalEncoder(
@@ -113,6 +115,10 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             fermi_features_dim=config.FERMI_FEATURE_DIM,
             output_dim=latent_dim_other_ffnn
         )
+        self.asph_encoder = PHTokenEncoder(
+            input_dim=asph_feature_dim,
+            output_dim=asph_feature_dim
+        )
         # Use GPU-accelerated spectral encoder (much faster than CPU SciPy)
         self.spectral_encoder = GPUSpectralEncoder(
             k_eigs=config.K_LAPLACIAN_EIGS,
@@ -139,6 +145,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
                 inputs['crystal_graph'], return_topological_logits=False
             )
             kspace_emb    = self.kspace_encoder(inputs['kspace_graph'])
+            asph_emb      = self.asph_encoder(inputs['asph_features'])
             scalar_emb    = self.scalar_encoder(inputs['scalar_features'])
             phys_emb      = self.enhanced_kspace_physics_encoder(
                 decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
@@ -161,7 +168,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             ml_emb, ml_logits = None, None
 
             # Concatenate all
-            features = [crystal_emb, kspace_emb, scalar_emb, phys_emb, spec_emb]
+            features = [crystal_emb, kspace_emb, asph_emb, scalar_emb, phys_emb, spec_emb]
             if ml_emb is not None:
                 features.append(ml_emb)
             x = torch.cat(features, dim=-1)
@@ -464,6 +471,7 @@ def main_training_loop():
     model = EnhancedMultiModalMaterialClassifier(
         crystal_node_feature_dim=config.CRYSTAL_NODE_FEATURE_DIM,
         kspace_node_feature_dim=config.KSPACE_GRAPH_NODE_FEATURE_DIM,
+        asph_feature_dim=config.ASPH_FEATURE_DIM,
         scalar_feature_dim=config.SCALAR_TOTAL_DIM,
         decomposition_feature_dim=config.DECOMPOSITION_FEATURE_DIM,
         num_topology_classes=config.NUM_TOPOLOGY_CLASSES

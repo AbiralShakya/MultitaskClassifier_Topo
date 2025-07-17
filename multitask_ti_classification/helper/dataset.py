@@ -226,15 +226,7 @@ class MaterialDataset(Dataset):
             crystal_graph.edge_attr = self._check_and_handle_nan_inf(crystal_graph.edge_attr, f"crystal_graph.edge_attr", jid)
         
         # --- 2. Load ASPH Features ---
-        asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / "asph_features_rev2.npy"
-        try:
-            asph_features_np = np.load(asph_features_path)
-            asph_features = torch.tensor(asph_features_np, dtype=torch.float)
-            asph_features = self._check_and_handle_nan_inf(asph_features, f"asph_features", jid)
-        except Exception as e:
-            warnings.warn(f"Could not load ASPH features for JID {jid} from {asph_features_path}: {e}. Returning zeros.")
-            asph_features = torch.zeros(getattr(config, 'ASPH_FEATURE_DIM', 3115), dtype=torch.float)
-
+        asph_features = self._load_asph_features(jid)  # Implement this method if not present
         # Apply scaling to ASPH features
         if self.scaler and 'asph' in self.scaler:
             if asph_features.ndim == 1:
@@ -480,8 +472,8 @@ class MaterialDataset(Dataset):
         print(f"[DATASET] __getitem__ end: idx={idx}, JID={jid}")
         return {
             'crystal_graph': crystal_graph,
-            'asph_features': asph_features,
             'kspace_graph': kspace_graph,
+            'asph_features': asph_features,
             'kspace_physics_features': kspace_physics_features_dict,
             'scalar_features': combined_scalar_features,
             'topology_label': topology_label,
@@ -516,6 +508,18 @@ class MaterialDataset(Dataset):
     def _generate_dummy_base_decomposition_features(self):
         base_decomposition_feature_dim = getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2) 
         return torch.zeros(base_decomposition_feature_dim)
+
+    def _load_asph_features(self, jid: str) -> torch.Tensor:
+        """Loads ASPH features for a given JID."""
+        asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / "asph_features_rev2.npy"
+        try:
+            asph_features_np = np.load(asph_features_path)
+            asph_features = torch.tensor(asph_features_np, dtype=torch.float)
+            asph_features = self._check_and_handle_nan_inf(asph_features, f"asph_features", jid)
+        except Exception as e:
+            warnings.warn(f"Could not load ASPH features for JID {jid} from {asph_features_path}: {e}. Returning zeros.")
+            asph_features = torch.zeros(getattr(config, 'ASPH_FEATURE_DIM', 3115), dtype=torch.float)
+        return asph_features
 
 def custom_collate_fn(batch_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     print(f"[COLLATE] custom_collate_fn called with batch_list of size {len(batch_list)}")
