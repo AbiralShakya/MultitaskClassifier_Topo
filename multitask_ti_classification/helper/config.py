@@ -41,40 +41,40 @@ PRELOAD_DATASET = True  # Enable preloading for faster training
 # Remove or ignore all magnetism-related mappings and class counts
 
 # --- Model Hyperparameters ---
-LATENT_DIM_GNN = 128
-LATENT_DIM_ASPH = 128
-LATENT_DIM_OTHER_FFNN = 128
+LATENT_DIM_GNN = 256
+LATENT_DIM_ASPH = 256  # Keep for compatibility with model_w_debug
+LATENT_DIM_OTHER_FFNN = 256
 LATENT_DIM_FFNN = LATENT_DIM_OTHER_FFNN
 
 # Crystal encoder specific parameters
-crystal_encoder_output_dim = 128
+crystal_encoder_output_dim = 256
 
 # Topological ML parameters
 AUXILIARY_WEIGHT = 0.1 # Weight for auxiliary topological ML loss
-crystal_encoder_hidden_dim = 64  # Reduced from 128
-crystal_encoder_num_layers = 3   # Reduced from 6
-crystal_encoder_radius = 3.0     # Reduced from 4.0
-crystal_encoder_num_scales = 1   # Reduced from 3 (disable multi-scale)
-crystal_encoder_use_topological_features = False  # Disable expensive topological feature extraction
+crystal_encoder_hidden_dim = 128  # Increased from 64
+crystal_encoder_num_layers = 6   # Increased from 3
+crystal_encoder_radius = 4.0     # Increased from 3.0
+crystal_encoder_num_scales = 3   # Increased from 1 (enable multi-scale)
+crystal_encoder_use_topological_features = True  # Enable topological feature extraction
 
-FUSION_HIDDEN_DIMS = [1024, 512, 64]  # Reduced from [256, 128] for more stable training
+FUSION_HIDDEN_DIMS = [2048, 1024, 512, 128]  # Increased capacity
 
 # GNN specific
-GNN_NUM_LAYERS = 8  # Reduced from 3 for less complexity
-GNN_HIDDEN_CHANNELS = 512  # Reduced from 128 for more stable training
-KSPACE_GNN_NUM_HEADS = 8  # Reduced from 8 for less complexity
+GNN_NUM_LAYERS = 12  # Increased from 8
+GNN_HIDDEN_CHANNELS = 1024  # Increased from 512
+KSPACE_GNN_NUM_HEADS = 16  # Increased from 8
 
 # FFNN specific
-FFNN_HIDDEN_DIMS_ASPH = [256, 128, 64]  # Reduced from [256, 128] for more stable training
 FFNN_HIDDEN_DIMS_SCALAR = [256, 128, 64]  # Reduced from [256, 128] for more stable training
+FFNN_HIDDEN_DIMS_ASPH = [256, 128, 64]  # Keep for compatibility with model_w_debug
 
 # --- Training Parameters ---
-LEARNING_RATE = 1e-4  # Reduced from 0.001 for better stability
-BATCH_SIZE = 8 # Reduced from 32 to speed up training
-NUM_EPOCHS = 100
-DROPOUT_RATE = 0.2  # Reduced from 0.2 for less regularization
-PATIENCE = 20  # Reduced from 10 for faster early stopping
-MAX_GRAD_NORM = 0.5  # Reduced from 1.0 for more conservative gradient clipping
+LEARNING_RATE = 5e-4  # Increased from 1e-4 for faster convergence
+BATCH_SIZE = 16 # Increased from 8 for better gradients
+NUM_EPOCHS = 150  # Increased from 100
+DROPOUT_RATE = 0.1  # Reduced from 0.2 for less regularization
+PATIENCE = 30  # Increased from 20 for more training time
+MAX_GRAD_NORM = 1.0  # Increased from 0.5 for better gradient flow
 
 EGNN_HIDDEN_IRREPS_STR = "64x0e + 32x1o + 16x2e"
 EGNN_RADIUS = 5.0
@@ -100,7 +100,7 @@ TEST_RATIO = 0.1
 # --- Feature Dimensions ---
 CRYSTAL_NODE_FEATURE_DIM = 3  # actual crystal graph node feature dimension from data
 CRYSTAL_EDGE_FEATURE_DIM = 1  # e.g., binned distance
-ASPH_FEATURE_DIM = 512
+ASPH_FEATURE_DIM = 512  # Keep for compatibility with model_w_debug
 KSPACE_NODE_FEATURE_DIM = 10  # updated to match your k-space node feature dim
 KSPACE_EDGE_FEATURE_DIM = 4   # adjust to your k-space edge feature dim
 KSPACE_GRAPH_NODE_FEATURE_DIM = 10  # k-space graph node feature dimension

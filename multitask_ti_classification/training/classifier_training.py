@@ -27,7 +27,6 @@ from sklearn.metrics import accuracy_score
 from helper.topological_crystal_encoder import TopologicalCrystalEncoder
 from src.model_w_debug import KSpaceTransformerGNNEncoder, ScalarFeatureEncoder
 from helper.kspace_physics_encoders import EnhancedKSpacePhysicsFeatures
-from encoders.ph_token_encoder import PHTokenEncoder
 # GPU-accelerated spectral graph features
 from helper.gpu_spectral_encoder import GPUSpectralEncoder, FastSpectralEncoder
 # REMOVED: Topological ML encoder (expensive synthetic Hamiltonian generation)
@@ -39,13 +38,109 @@ import helper.config as config
 import pickle
 import gc
 
+# Import for attention mechanism
+import math
+
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention mechanism for better feature fusion."""
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        super().__init__()
+        assert d_model % num_heads == 0
+        
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        
+        self.w_q = nn.Linear(d_model, d_model)
+        self.w_k = nn.Linear(d_model, d_model)
+        self.w_v = nn.Linear(d_model, d_model)
+        self.w_o = nn.Linear(d_model, d_model)
+        
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(d_model)
+        
+    def scaled_dot_product_attention(self, Q, K, V, mask=None):
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        attention_weights = F.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+        output = torch.matmul(attention_weights, V)
+        return output, attention_weights
+    
+    def forward(self, x, mask=None):
+        batch_size = x.size(0)
+        
+        # Linear transformations
+        Q = self.w_q(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        K = self.w_k(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        V = self.w_v(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        
+        # Apply attention
+        attention_output, attention_weights = self.scaled_dot_product_attention(Q, K, V, mask)
+        
+        # Concatenate heads
+        attention_output = attention_output.transpose(1, 2).contiguous().view(
+            batch_size, -1, self.d_model
+        )
+        
+        # Final linear transformation
+        output = self.w_o(attention_output)
+        
+        # Residual connection and layer normalization
+        output = self.layer_norm(x + output)
+        
+        return output
+
+def mixup_data(x, y, alpha=0.2):
+    """Mixup data augmentation."""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Mixup loss function."""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+def add_feature_noise(features, noise_std=0.01):
+    """Add small noise to features for regularization."""
+    noise = torch.randn_like(features) * noise_std
+    return features + noise
+
+class FocalLoss(nn.Module):
+    """Focal Loss for better handling of class imbalance."""
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
+
 class EnhancedMultiModalMaterialClassifier(nn.Module):
     def __init__(
         self,
         # Feature dims
         crystal_node_feature_dim: int,
         kspace_node_feature_dim: int,
-        asph_feature_dim: int,
         scalar_feature_dim: int,
         decomposition_feature_dim: int,
         # Class counts
@@ -84,7 +179,6 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         self._phys_dim     = latent_dim_other_ffnn
         self._spec_dim     = spectral_hidden
         self._topo_ml_dim  = topological_ml_dim if use_topo_ml else 0
-        self._asph_dim     = asph_feature_dim
 
         # Instantiate encoders
         self.crystal_encoder = TopologicalCrystalEncoder(
@@ -115,10 +209,6 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             fermi_features_dim=config.FERMI_FEATURE_DIM,
             output_dim=latent_dim_other_ffnn
         )
-        self.asph_encoder = PHTokenEncoder(
-            input_dim=asph_feature_dim,
-            output_dim=asph_feature_dim
-        )
         # Use GPU-accelerated spectral encoder (much faster than CPU SciPy)
         self.spectral_encoder = GPUSpectralEncoder(
             k_eigs=config.K_LAPLACIAN_EIGS,
@@ -133,10 +223,24 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         self.fusion_hidden_dims = fusion_hidden_dims
         self.dropout_rate = dropout_rate
         self.fusion_network = None  # Will be created in forward pass
+        
+        # NEW: Attention mechanism for better feature fusion
+        self.attention_heads = 8
+        self.attention_dropout = 0.1
+        
+        # NEW: Data augmentation parameters
+        self.use_mixup = True
+        self.mixup_alpha = 0.2
+        self.feature_noise_std = 0.01
+        self.training = True
 
         # Output heads - initialize with placeholder input dim (will update in forward if needed)
         self.num_topology_classes = num_topology_classes
         self.topology_head = nn.Linear(1, self.num_topology_classes)
+        
+        # NEW: Ensemble heads for better accuracy
+        self.ensemble_heads = []
+        self.num_ensemble_heads = 3
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
         try:
@@ -145,7 +249,6 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
                 inputs['crystal_graph'], return_topological_logits=False
             )
             kspace_emb    = self.kspace_encoder(inputs['kspace_graph'])
-            asph_emb      = self.asph_encoder(inputs['asph_features'])
             scalar_emb    = self.scalar_encoder(inputs['scalar_features'])
             phys_emb      = self.enhanced_kspace_physics_encoder(
                 decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
@@ -168,7 +271,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             ml_emb, ml_logits = None, None
 
             # Concatenate all
-            features = [crystal_emb, kspace_emb, asph_emb, scalar_emb, phys_emb, spec_emb]
+            features = [crystal_emb, kspace_emb, scalar_emb, phys_emb, spec_emb]
             if ml_emb is not None:
                 features.append(ml_emb)
             x = torch.cat(features, dim=-1)
@@ -176,6 +279,12 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             # --- ADD FEATURE NORMALIZATION ---
             # Normalize features to prevent gradient explosion
             x = F.layer_norm(x, x.shape[1:])
+            
+            # --- ADD DATA AUGMENTATION ---
+            if self.training:
+                # Add feature noise for regularization
+                x = add_feature_noise(x, self.feature_noise_std)
+            # ---------------------------------------------------
             
             # --- ADD DEBUGGING FOR FIRST FEW BATCHES ---
             if not hasattr(self, '_debug_count'):
@@ -189,15 +298,41 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             if self.fusion_network is None:
                 actual_input_dim = x.shape[1]
                 print(f"Creating fusion network with input dimension: {actual_input_dim}")
+                
+                # Create attention mechanism
+                self.attention = MultiHeadAttention(
+                    d_model=actual_input_dim,
+                    num_heads=self.attention_heads,
+                    dropout=self.attention_dropout
+                ).to(x.device)
+                
+                # Create fusion MLP
                 layers = []
                 in_dim = actual_input_dim
                 for h in self.fusion_hidden_dims:
                     layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.ReLU(), nn.Dropout(self.dropout_rate)]
                     in_dim = h
                 self.fusion_network = nn.Sequential(*layers).to(x.device)
+                
                 # Update output heads to match new input dim
                 self.topology_head = nn.Linear(in_dim, self.num_topology_classes).to(x.device)
+                
+                # Create ensemble heads
+                self.ensemble_heads = []
+                for i in range(self.num_ensemble_heads):
+                    head = nn.Sequential(
+                        nn.Linear(in_dim, in_dim // 2),
+                        nn.ReLU(),
+                        nn.Dropout(0.2),
+                        nn.Linear(in_dim // 2, self.num_topology_classes)
+                    ).to(x.device)
+                    self.ensemble_heads.append(head)
 
+            # Apply attention mechanism for better feature interaction
+            x_reshaped = x.unsqueeze(1)  # Add sequence dimension for attention
+            x_attended = self.attention(x_reshaped)
+            x = x_attended.squeeze(1)  # Remove sequence dimension
+            
             fused = self.fusion_network(x)
             
             # --- ADD GRADIENT CLIPPING TO FUSED FEATURES ---
@@ -208,9 +343,26 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
                 print(f"[DEBUG] Fused stats - min: {fused.min():.4f}, max: {fused.max():.4f}, mean: {fused.mean():.4f}, std: {fused.std():.4f}")
             # ---------------------------------------------------
 
-            logits = self.topology_head(fused)
+            # Main head
+            main_logits = self.topology_head(fused)
+            
+            # Ensemble heads
+            ensemble_logits = []
+            for head in self.ensemble_heads:
+                ensemble_logits.append(head(fused))
+            
+            # Average ensemble predictions
+            ensemble_logits = torch.stack(ensemble_logits)
+            ensemble_logits = torch.mean(ensemble_logits, dim=0)
+            
+            # Combine main and ensemble predictions
+            final_logits = 0.7 * main_logits + 0.3 * ensemble_logits
 
-            return {'logits': logits}
+            return {
+                'logits': final_logits,
+                'main_logits': main_logits,
+                'ensemble_logits': ensemble_logits
+            }
         except Exception as e:
             print(f"ERROR in forward pass: {e}")
             import traceback
@@ -218,7 +370,30 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             raise e
 
     def compute_loss(self, predictions: Dict[str, torch.Tensor], targets: torch.Tensor) -> torch.Tensor:
-        return F.cross_entropy(predictions['logits'], targets, label_smoothing=0.1)
+        if self.training and self.use_mixup:
+            # Apply mixup
+            mixed_features, targets_a, targets_b, lam = mixup_data(
+                predictions['logits'], targets, self.mixup_alpha
+            )
+            main_loss = mixup_criterion(F.cross_entropy, mixed_features, targets_a, targets_b, lam)
+            
+            # Add ensemble loss
+            ensemble_loss = 0
+            for i in range(self.num_ensemble_heads):
+                ensemble_loss += F.cross_entropy(predictions['ensemble_logits'], targets, label_smoothing=0.1)
+            ensemble_loss /= self.num_ensemble_heads
+            
+            return main_loss + 0.1 * ensemble_loss
+        else:
+            main_loss = F.cross_entropy(predictions['logits'], targets, label_smoothing=0.1)
+            
+            # Add ensemble loss
+            ensemble_loss = 0
+            for i in range(self.num_ensemble_heads):
+                ensemble_loss += F.cross_entropy(predictions['ensemble_logits'], targets, label_smoothing=0.1)
+            ensemble_loss /= self.num_ensemble_heads
+            
+            return main_loss + 0.1 * ensemble_loss
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, train_losses, val_losses, 
@@ -471,7 +646,6 @@ def main_training_loop():
     model = EnhancedMultiModalMaterialClassifier(
         crystal_node_feature_dim=config.CRYSTAL_NODE_FEATURE_DIM,
         kspace_node_feature_dim=config.KSPACE_GRAPH_NODE_FEATURE_DIM,
-        asph_feature_dim=config.ASPH_FEATURE_DIM,
         scalar_feature_dim=config.SCALAR_TOTAL_DIM,
         decomposition_feature_dim=config.DECOMPOSITION_FEATURE_DIM,
         num_topology_classes=config.NUM_TOPOLOGY_CLASSES
@@ -501,8 +675,16 @@ def main_training_loop():
         traceback.print_exc()
     
     # Setup optimizer and scheduler using config values
-    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5, eps=1e-8)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=config.PATIENCE, factor=0.7, min_lr=1e-6)
+    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-4, eps=1e-8, betas=(0.9, 0.999))
+    
+    # Advanced learning rate scheduling with warmup
+    def warmup_cosine_schedule(epoch):
+        if epoch < 10:  # Warmup for first 10 epochs
+            return epoch / 10
+        else:  # Cosine annealing
+            return 0.5 * (1 + math.cos(math.pi * (epoch - 10) / (config.NUM_EPOCHS - 10)))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_cosine_schedule)
     
     # Checkpoint functionality
     checkpoint_dir = "./checkpoints"
@@ -665,7 +847,7 @@ def main_training_loop():
             print(f"GPU memory after cleanup: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
         
         # Learning rate scheduling
-        scheduler.step(avg_val_loss)
+        scheduler.step()
         
         # Early stopping
         if avg_val_loss < best_val_loss:

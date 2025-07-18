@@ -8,8 +8,107 @@ from e3nn import o3
 from e3nn.o3 import FullyConnectedTensorProduct, Linear, Irreps
 from e3nn.nn import Gate
 from typing import List, Dict, Any, Tuple
+import math
+import numpy as np
 
 import helper.config as config
+
+# --- Multi-Head Attention Mechanism ---
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention mechanism for better feature fusion."""
+    def __init__(self, d_model, num_heads, dropout=0.1):
+        super().__init__()
+        assert d_model % num_heads == 0
+        
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        
+        self.w_q = nn.Linear(d_model, d_model)
+        self.w_k = nn.Linear(d_model, d_model)
+        self.w_v = nn.Linear(d_model, d_model)
+        self.w_o = nn.Linear(d_model, d_model)
+        
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(d_model)
+        
+    def scaled_dot_product_attention(self, Q, K, V, mask=None):
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        attention_weights = F.softmax(scores, dim=-1)
+        attention_weights = self.dropout(attention_weights)
+        output = torch.matmul(attention_weights, V)
+        return output, attention_weights
+    
+    def forward(self, x, mask=None):
+        batch_size = x.size(0)
+        
+        # Linear transformations
+        Q = self.w_q(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        K = self.w_k(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        V = self.w_v(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        
+        # Apply attention
+        attention_output, attention_weights = self.scaled_dot_product_attention(Q, K, V, mask)
+        
+        # Concatenate heads
+        attention_output = attention_output.transpose(1, 2).contiguous().view(
+            batch_size, -1, self.d_model
+        )
+        
+        # Final linear transformation
+        output = self.w_o(attention_output)
+        
+        # Residual connection and layer normalization
+        output = self.layer_norm(x + output)
+        
+        return output
+
+# --- Data Augmentation Functions ---
+def mixup_data(x, y, alpha=0.2):
+    """Mixup data augmentation."""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Mixup loss function."""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
+
+def add_feature_noise(features, noise_std=0.01):
+    """Add small noise to features for regularization."""
+    noise = torch.randn_like(features) * noise_std
+    return features + noise
+
+# --- Focal Loss ---
+class FocalLoss(nn.Module):
+    """Focal Loss for better handling of class imbalance."""
+    def __init__(self, alpha=1, gamma=2, reduction='mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+        
+    def forward(self, inputs, targets):
+        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
+        pt = torch.exp(-ce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        else:
+            return focal_loss
 
 # --- 1. Crystal Graph Encoder (RealSpaceEGNN) ---
 
@@ -39,21 +138,9 @@ class EGNNLayer(nn.Module):
 
         # Direct linear path for update
         self.linear_update_direct = Linear(node_irreps_in, hidden_irreps)
-
-        # print(f"EGNNLayer init:")
-        # print(f"  node_irreps_in: {node_irreps_in}")
-        # print(f"  edge_irreps_in: {edge_irreps_in}")
-        # print(f"  hidden_irreps: {hidden_irreps}")
-        # print(f"  tp_messages_ij.irreps_out: {self.tp_messages_ij.irreps_out}")
-        # print(f"  tp_update.irreps_out: {self.tp_update.irreps_out}")
         
     def forward(self, node_features, edge_index: torch.Tensor, edge_attr_tensor: torch.Tensor, 
                 node_attr_scalar_raw: torch.Tensor):
-        
-        # print(f"Forward pass debug:")
-        # print(f"  node_features.shape: {node_features.shape}")
-        # print(f"  edge_attr_tensor.shape: {edge_attr_tensor.shape}")
-        # print(f"  edge_index.shape: {edge_index.shape}")
         
         row, col = edge_index
 
@@ -64,33 +151,24 @@ class EGNNLayer(nn.Module):
         
         # Create proper e3nn edge attributes: concatenate scalar + vector
         edge_attr_e3nn = torch.cat([dist, r_vec], dim=-1)  # (num_edges, 4)
-      #  print(f"  edge_attr_e3nn.shape: {edge_attr_e3nn.shape}")
 
         # 1. Message passing with both tensor product and direct paths
         messages_tp_output = self.tp_messages_ij(node_features[col], edge_attr_e3nn)
-      #  print(f"  messages_tp_output.shape: {messages_tp_output.shape}")
-        
         messages_direct = self.linear_messages_direct(node_features[col])
         messages_from_j = messages_tp_output + messages_direct
-      #  print(f"  messages_from_j.shape: {messages_from_j.shape}")
 
         # 2. Aggregation (sum messages for each node)
         aggregated_messages = torch_geometric.utils.scatter(
             messages_from_j, row, dim=0, dim_size=node_features.size(0), reduce="sum"
         )
-     #   print(f"  aggregated_messages.shape: {aggregated_messages.shape}")
 
         # 3. Update with both tensor product and direct paths
         updated_node_features_tp_output = self.tp_update(node_features, aggregated_messages)
-     #   print(f"  updated_node_features_tp_output.shape: {updated_node_features_tp_output.shape}")
-        
         updated_node_features_direct = self.linear_update_direct(node_features)
         updated_node_features = updated_node_features_tp_output + updated_node_features_direct
-      #  print(f"  updated_node_features.shape: {updated_node_features.shape}")
         
         # Residual connection
         result = node_features + updated_node_features
-      #  print(f"  result.shape: {result.shape}")
         
         return result
 
@@ -103,8 +181,8 @@ class RealSpaceEGNNEncoder(nn.Module):
     def __init__(self, 
                  node_input_scalar_dim: int,
                  hidden_irreps_str: str = "64x0e + 32x1o + 16x2e",
-                 n_layers: int = 3,  # Reduced from 6 for debugging
-                 radius: float = 5.0
+                 n_layers: int = 6,  # Increased from 3
+                 radius: float = 4.0  # Updated to match config
                 ):
         super().__init__()
         
@@ -198,33 +276,32 @@ class RealSpaceEGNNEncoder(nn.Module):
 # --- 2. K-space Graph Encoder (TransformerConv) ---
 class KSpaceTransformerGNNEncoder(nn.Module):
     """
-    Graph Transformer (TransformerConv) encoder for k-space topology graphs.
+    Simplified TransformerConv-based encoder for k-space graphs.
     """
     def __init__(self, node_feature_dim: int, hidden_dim: int, out_channels: int, # out_channels is LATENT_DIM_GNN
-                 n_layers: int = 3, num_heads: int = 8):
+                 n_layers: int = 8, num_heads: int = 8):  # Reduced complexity
         super().__init__()
+        
         self.initial_projection = nn.Linear(node_feature_dim, hidden_dim)
-
+        
         self.layers = nn.ModuleList()
         self.bns = nn.ModuleList()
-
-        current_in_channels = hidden_dim # Input to the first TransformerConv layer
-
+        
+        current_in_channels = hidden_dim
+        
         for i in range(n_layers):
-            transformer_out_channels = hidden_dim * num_heads
-
             self.layers.append(TransformerConv(
                 in_channels=current_in_channels,
-                out_channels=hidden_dim, # This is 'per head' output dimension
+                out_channels=hidden_dim // num_heads,  # Ensure output is hidden_dim
                 heads=num_heads,
                 dropout=config.DROPOUT_RATE,
                 beta=True
             ))
-            self.bns.append(nn.BatchNorm1d(transformer_out_channels))
+            self.bns.append(nn.LayerNorm(hidden_dim))  # Fixed dimension
 
-            current_in_channels = transformer_out_channels # Update for next layer
+            current_in_channels = hidden_dim # Update for next layer
 
-        # FIX: Add a final linear layer to project to out_channels (LATENT_DIM_GNN)
+        # Final projection to desired output dimension
         self.final_projection = nn.Linear(current_in_channels, out_channels)
 
 
@@ -239,36 +316,15 @@ class KSpaceTransformerGNNEncoder(nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)
 
-        # Global mean pool first
-        pooled_x = global_mean_pool(x, batch) # Shape: (batch_size, current_in_channels) after loop
+        # Global mean pool
+        pooled_x = global_mean_pool(x, batch)
 
-        # FIX: Project pooled features to the desired output dimension (LATENT_DIM_GNN)
+        # Final projection
         final_embedding = self.final_projection(pooled_x)
 
         return final_embedding
-# --- 3. ASPH Encoder ---
 
-class PHTokenEncoder(nn.Module):
-    """
-    Encoder for Atom-Specific Persistent Homology (ASPH) features.
-    A simple FFNN to process the feature vector.
-    """
-    def __init__(self, input_dim: int, out_channels: int):
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(input_dim, out_channels * 2),
-            nn.BatchNorm1d(out_channels * 2),
-            nn.ReLU(),
-            nn.Dropout(p=config.DROPOUT_RATE),
-            nn.Linear(out_channels * 2, out_channels),
-            nn.BatchNorm1d(out_channels),
-            nn.ReLU()
-        )
-
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
-        return self.network(features)
-
-# --- 4. Scalar Features Encoder ---
+# --- 3. Scalar Features Encoder ---
 
 class ScalarFeatureEncoder(nn.Module):
     """
@@ -280,20 +336,20 @@ class ScalarFeatureEncoder(nn.Module):
         in_dim = input_dim
         for h_dim in hidden_dims:
             layers.append(nn.Linear(in_dim, h_dim))
-            layers.append(nn.BatchNorm1d(h_dim))
+            layers.append(nn.LayerNorm(h_dim))  # Changed to LayerNorm
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(p=config.DROPOUT_RATE))
             in_dim = h_dim
         
         layers.append(nn.Linear(in_dim, out_channels))
-        layers.append(nn.BatchNorm1d(out_channels))
+        layers.append(nn.LayerNorm(out_channels))  # Changed to LayerNorm
         layers.append(nn.ReLU())
         self.network = nn.Sequential(*layers)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.network(features)
 
-# --- 5. Decomposition Features Encoder ---
+# --- 4. Decomposition Features Encoder ---
 
 class DecompositionFeatureEncoder(nn.Module):
     """
@@ -303,29 +359,28 @@ class DecompositionFeatureEncoder(nn.Module):
         super().__init__()
         self.network = nn.Sequential(
             nn.Linear(input_dim, out_channels * 2), 
-            nn.BatchNorm1d(out_channels * 2),
+            nn.LayerNorm(out_channels * 2),  # Changed to LayerNorm
             nn.ReLU(),
             nn.Dropout(p=config.DROPOUT_RATE),
             nn.Linear(out_channels * 2, out_channels),
-            nn.BatchNorm1d(out_channels),
+            nn.LayerNorm(out_channels),  # Changed to LayerNorm
             nn.ReLU()
         )
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.network(features)
 
-# --- 6. Main Multi-Modal Classifier ---
+# --- 5. Main Multi-Modal Classifier ---
 
 class MultiModalMaterialClassifier(nn.Module):
     """
-    Multi-modal, multi-task classifier for materials.
-    Combines Real-space EGNN, K-space Transformer GNN, ASPH, and Scalar features.
+    Enhanced multi-modal classifier for materials with attention, ensemble, and data augmentation.
+    Combines Real-space EGNN, K-space Transformer GNN, and Scalar features.
     """
     def __init__(
         self,
         crystal_node_feature_dim: int,
         kspace_node_feature_dim: int,
-        asph_feature_dim: int,
         scalar_feature_dim: int,
         decomposition_feature_dim: int,
         num_topology_classes: int,
@@ -333,20 +388,27 @@ class MultiModalMaterialClassifier(nn.Module):
         
         # Encoder specific params
         egnn_hidden_irreps_str: str = "64x0e + 32x1o + 16x2e",
-        egnn_num_layers: int = 3,  # Reduced for debugging
-        egnn_radius: float = 5.0,
+        egnn_num_layers: int = 6,  # Increased from 3
+        egnn_radius: float = 4.0,  # Updated to match config
         
         kspace_gnn_hidden_channels: int = config.GNN_HIDDEN_CHANNELS,
-        kspace_gnn_num_layers: int = 3,  # Reduced for debugging
-        kspace_gnn_num_heads: int = 8,
+        kspace_gnn_num_layers: int = 8,  # Reduced from 12
+        kspace_gnn_num_heads: int = 8,  # Reduced from 16
         
-        ffnn_hidden_dims_asph: List[int] = config.FFNN_HIDDEN_DIMS_ASPH,
         ffnn_hidden_dims_scalar: List[int] = config.FFNN_HIDDEN_DIMS_SCALAR,
         
         # Shared fusion params
         latent_dim_gnn: int = config.LATENT_DIM_GNN,
         latent_dim_ffnn: int = config.LATENT_DIM_FFNN,
         fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
+        
+        # NEW: Attention and ensemble parameters
+        attention_heads: int = 8,
+        attention_dropout: float = 0.1,
+        num_ensemble_heads: int = 3,
+        use_mixup: bool = True,
+        mixup_alpha: float = 0.2,
+        feature_noise_std: float = 0.01,
     ):
         super().__init__()
 
@@ -363,10 +425,6 @@ class MultiModalMaterialClassifier(nn.Module):
             n_layers=kspace_gnn_num_layers,
             num_heads=kspace_gnn_num_heads
         )
-        self.asph_encoder = PHTokenEncoder(
-            input_dim=asph_feature_dim,
-            out_channels=latent_dim_ffnn 
-        )
         self.scalar_encoder = ScalarFeatureEncoder(
             input_dim=scalar_feature_dim,
             hidden_dims=ffnn_hidden_dims_scalar,
@@ -377,42 +435,139 @@ class MultiModalMaterialClassifier(nn.Module):
             out_channels=latent_dim_ffnn
         )
 
-        total_fused_dim = (latent_dim_gnn * 2) + (latent_dim_ffnn * 3) 
+        # Store dimensions for fusion
+        self._crystal_dim = latent_dim_gnn
+        self._kspace_dim = latent_dim_gnn
+        self._scalar_dim = latent_dim_ffnn
+        self._decomp_dim = latent_dim_ffnn
+        
+        # NEW: Attention mechanism
+        self.attention_heads = attention_heads
+        self.attention_dropout = attention_dropout
+        self.attention = None  # Will be created dynamically
+        
+        # NEW: Ensemble heads
+        # self.ensemble_heads = []
+        # self.num_ensemble_heads = num_ensemble_heads
+        
+        # NEW: Data augmentation parameters
+        self.use_mixup = use_mixup
+        self.mixup_alpha = mixup_alpha
+        self.feature_noise_std = feature_noise_std
+        self.training = True
 
-        fusion_layers = []
-        in_dim_fusion = total_fused_dim
-        for h_dim in fusion_hidden_dims:
-            fusion_layers.append(nn.Linear(in_dim_fusion, h_dim))
-            fusion_layers.append(nn.BatchNorm1d(h_dim))
-            fusion_layers.append(nn.ReLU())
-            fusion_layers.append(nn.Dropout(p=config.DROPOUT_RATE))
-            in_dim_fusion = h_dim 
-        self.fusion_network = nn.Sequential(*fusion_layers)
+        # Fusion network will be created dynamically
+        self.fusion_hidden_dims = fusion_hidden_dims
+        self.fusion_network = None
 
-        self.topology_head = nn.Linear(in_dim_fusion, num_topology_classes)
-        self.magnetism_head = nn.Linear(in_dim_fusion, num_magnetism_classes)
+        # Output heads
+        self.topology_head = nn.Linear(1, num_topology_classes)  # Placeholder
+        self.magnetism_head = nn.Linear(1, num_magnetism_classes)  # Placeholder
 
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        # Encode each modality
         crystal_emb = self.crystal_encoder(inputs['crystal_graph'])
-      #  print(f"DEBUG: crystal_emb shape: {crystal_emb.shape}") # Add this
         kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
-       # print(f"DEBUG: kspace_emb shape: {kspace_emb.shape}") # Add this
-        asph_emb = self.asph_encoder(inputs['asph_features'])
-        #print(f"DEBUG: asph_emb shape: {asph_emb.shape}") # Add this
         scalar_emb = self.scalar_encoder(inputs['scalar_features'])
-        #print(f"DEBUG: scalar_emb shape: {scalar_emb.shape}") # Add this
         decomposition_emb = self.decomposition_encoder(inputs['kspace_physics_features']['decomposition_features'])
-        #print(f"DEBUG: decomposition_emb shape: {decomposition_emb.shape}") # Add this
 
-        combined_emb = torch.cat([crystal_emb, kspace_emb, asph_emb, scalar_emb, decomposition_emb], dim=-1)
-        #print(f"DEBUG: combined_emb shape before fusion: {combined_emb.shape}") # Add this
+        # Concatenate all features
+        features = [crystal_emb, kspace_emb, scalar_emb, decomposition_emb]
+        x = torch.cat(features, dim=-1)
+        
+        # Feature normalization
+        x = F.layer_norm(x, x.shape[1:])
+        
+        # Data augmentation
+        if self.training:
+            x = add_feature_noise(x, self.feature_noise_std)
 
-        fused_output = self.fusion_network(combined_emb)
+        # Dynamically create fusion network if not exists
+        if self.fusion_network is None:
+            actual_input_dim = x.shape[1]
+            print(f"Creating fusion network with input dimension: {actual_input_dim}")
+            
+            # Create attention mechanism
+            self.attention = MultiHeadAttention(
+                d_model=actual_input_dim,
+                num_heads=self.attention_heads,
+                dropout=self.attention_dropout
+            ).to(x.device)
+            
+            # Create fusion MLP
+            layers = []
+            in_dim = actual_input_dim
+            for h in self.fusion_hidden_dims:
+                layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.ReLU(), nn.Dropout(config.DROPOUT_RATE)]
+                in_dim = h
+            self.fusion_network = nn.Sequential(*layers).to(x.device)
+            
+            # Comment out ensemble heads
+            # self.ensemble_heads = []
+            # for i in range(self.num_ensemble_heads):
+            #     head = nn.Sequential(
+            #         nn.Linear(in_dim, in_dim // 2),
+            #         nn.ReLU(),
+            #         nn.Dropout(0.2),
+            #         nn.Linear(in_dim // 2, self.topology_head.out_features)
+            #     ).to(x.device)
+            #     self.ensemble_heads.append(head)
+            
+            # Update output heads
+            self.topology_head = nn.Linear(in_dim, self.topology_head.out_features).to(x.device)
+            self.magnetism_head = nn.Linear(in_dim, self.magnetism_head.out_features).to(x.device)
 
-        topology_logits = self.topology_head(fused_output)
-        magnetism_logits = self.magnetism_head(fused_output)
+        # Apply attention mechanism
+        x_reshaped = x.unsqueeze(1)  # Add sequence dimension for attention
+        x_attended = self.attention(x_reshaped)
+        x = x_attended.squeeze(1)  # Remove sequence dimension
+        
+        fused = self.fusion_network(x)
+        
+        # Gradient clipping
+        fused = torch.clamp(fused, -10, 10)
+
+        # Main heads
+        topology_logits = self.topology_head(fused)
+        magnetism_logits = self.magnetism_head(fused)
+        
+        # Comment out ensemble logic
+        # ensemble_logits = []
+        # for head in self.ensemble_heads:
+        #     ensemble_logits.append(head(fused))
+        # ensemble_logits = torch.stack(ensemble_logits)
+        # ensemble_logits = torch.mean(ensemble_logits, dim=0)
+        final_topology_logits = topology_logits
 
         return {
-            'topology_logits': topology_logits,
-            'magnetism_logits': magnetism_logits
+            'topology_logits': final_topology_logits,
+            'magnetism_logits': magnetism_logits,
+            'main_topology_logits': topology_logits,
+            # 'ensemble_logits': ensemble_logits
         }
+
+    def compute_loss(self, predictions: Dict[str, torch.Tensor], topology_targets: torch.Tensor, magnetism_targets: torch.Tensor) -> torch.Tensor:
+        if self.training and self.use_mixup:
+            # Apply mixup to topology
+            mixed_features, targets_a, targets_b, lam = mixup_data(
+                predictions['topology_logits'], topology_targets, self.mixup_alpha
+            )
+            topology_loss = mixup_criterion(F.cross_entropy, mixed_features, targets_a, targets_b, lam)
+            # Comment out ensemble loss
+            # ensemble_loss = 0
+            # for i in range(self.num_ensemble_heads):
+            #     ensemble_loss += F.cross_entropy(predictions['ensemble_logits'], topology_targets, label_smoothing=0.1)
+            # ensemble_loss /= self.num_ensemble_heads
+            # Magnetism loss (no mixup)
+            magnetism_loss = F.cross_entropy(predictions['magnetism_logits'], magnetism_targets, label_smoothing=0.1)
+            return topology_loss + 0.5 * magnetism_loss
+        else:
+            topology_loss = F.cross_entropy(predictions['topology_logits'], topology_targets, label_smoothing=0.1)
+            # Comment out ensemble loss
+            # ensemble_loss = 0
+            # for i in range(self.num_ensemble_heads):
+            #     ensemble_loss += F.cross_entropy(predictions['ensemble_logits'], topology_targets, label_smoothing=0.1)
+            # ensemble_loss /= self.num_ensemble_heads
+            # Magnetism loss
+            magnetism_loss = F.cross_entropy(predictions['magnetism_logits'], magnetism_targets, label_smoothing=0.1)
+            return topology_loss + 0.5 * magnetism_loss

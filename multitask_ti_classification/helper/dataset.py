@@ -140,7 +140,6 @@ class MaterialDataset(Dataset):
         # and if a sample is available to infer from.
         self._crystal_node_feature_dim = getattr(config, 'CRYSTAL_NODE_FEATURE_DIM', 0)
         self._kspace_graph_node_feature_dim = getattr(config, 'KSPACE_GRAPH_NODE_FEATURE_DIM', 0)
-        self._asph_feature_dim = getattr(config, 'ASPH_FEATURE_DIM', 0)
         self._scalar_total_dim = getattr(config, 'SCALAR_TOTAL_DIM', len(self.scalar_features_columns) + getattr(config, 'BAND_REP_FEATURE_DIM', 0)) # Excludes band_gap here.
         
         # Preload all data if requested
@@ -187,7 +186,6 @@ class MaterialDataset(Dataset):
         return {
             'jid': jid,
             'crystal_graph': self._generate_dummy_crystal_graph(),
-            'asph_features': self._generate_dummy_asph_features(),
             'kspace_graph': self._generate_dummy_kspace_graph(),
             'kspace_physics_features': {
                 'decomposition_features': self._generate_dummy_base_decomposition_features(),
@@ -225,21 +223,7 @@ class MaterialDataset(Dataset):
         if crystal_graph.edge_attr is not None:
             crystal_graph.edge_attr = self._check_and_handle_nan_inf(crystal_graph.edge_attr, f"crystal_graph.edge_attr", jid)
         
-        # --- 2. Load ASPH Features ---
-        asph_features = self._load_asph_features(jid)  # Implement this method if not present
-        # Apply scaling to ASPH features
-        if self.scaler and 'asph' in self.scaler:
-            if asph_features.ndim == 1:
-                asph_features_np = asph_features.unsqueeze(0).cpu().numpy()
-                scaled_asph_features_np = self.scaler['asph'].transform(asph_features_np)
-                asph_features = torch.tensor(scaled_asph_features_np.squeeze(0), dtype=torch.float)
-            else:
-                scaled_asph_features_np = self.scaler['asph'].transform(asph_features.cpu().numpy())
-                asph_features = torch.tensor(scaled_asph_features_np, dtype=torch.float)
-            asph_features = self._check_and_handle_nan_inf(asph_features, f"asph_features_after_scaler", jid)
-
-
-        # --- 3. Load K-space Graph and related Physics Features ---
+        # --- 2. Load K-space Graph and related Physics Features ---
         sg_number = row['space_group_number'] 
         kspace_sg_folder = self.kspace_graphs_base_dir / f"SG_{str(int(sg_number)).zfill(3)}"
 
@@ -453,27 +437,18 @@ class MaterialDataset(Dataset):
             config.CRYSTAL_NODE_FEATURE_DIM = crystal_graph.x.shape[1]
         if config.KSPACE_GRAPH_NODE_FEATURE_DIM is None or config.KSPACE_GRAPH_NODE_FEATURE_DIM == 0:
             config.KSPACE_GRAPH_NODE_FEATURE_DIM = kspace_graph.x.shape[1]
-        if config.ASPH_FEATURE_DIM is None or config.ASPH_FEATURE_DIM == 0:
-            config.ASPH_FEATURE_DIM = asph_features.shape[0]
         if config.SCALAR_TOTAL_DIM is None or config.SCALAR_TOTAL_DIM == 0:
             config.SCALAR_TOTAL_DIM = combined_scalar_features.shape[0]
 
         topo_int = topology_label.item()
         cmb_int  = config.get_combined_label_from_ints(topo_int, 0) # Assuming magnetism is 0 for binary classification
         combined_label = torch.tensor(cmb_int, dtype=torch.long)
-
-        # Ensure asph_features is a torch tensor
-        if isinstance(asph_features, torch.Tensor):
-            asph_features = asph_features.detach().clone()
-        else:
-            asph_features = torch.tensor(asph_features, dtype=torch.float32)
         
         # Return as dictionary for the collate function
         print(f"[DATASET] __getitem__ end: idx={idx}, JID={jid}")
         return {
             'crystal_graph': crystal_graph,
             'kspace_graph': kspace_graph,
-            'asph_features': asph_features,
             'kspace_physics_features': kspace_physics_features_dict,
             'scalar_features': combined_scalar_features,
             'topology_label': topology_label,
@@ -501,25 +476,9 @@ class MaterialDataset(Dataset):
         symmetry_labels_dummy = torch.randint(0, 10, (num_nodes_dummy,), dtype=torch.long) # Add dummy symmetry labels
         return PyGData(x=x_dummy, edge_index=edge_index_dummy, batch=batch_dummy, pos=pos_dummy, symmetry_labels=symmetry_labels_dummy)
 
-    def _generate_dummy_asph_features(self):
-        asph_feature_dim = getattr(config, 'ASPH_FEATURE_DIM', 3115) 
-        return torch.zeros(asph_feature_dim)
-
     def _generate_dummy_base_decomposition_features(self):
         base_decomposition_feature_dim = getattr(config, 'BASE_DECOMPOSITION_FEATURE_DIM', 2) 
         return torch.zeros(base_decomposition_feature_dim)
-
-    def _load_asph_features(self, jid: str) -> torch.Tensor:
-        """Loads ASPH features for a given JID."""
-        asph_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / "asph_features_rev2.npy"
-        try:
-            asph_features_np = np.load(asph_features_path)
-            asph_features = torch.tensor(asph_features_np, dtype=torch.float)
-            asph_features = self._check_and_handle_nan_inf(asph_features, f"asph_features", jid)
-        except Exception as e:
-            warnings.warn(f"Could not load ASPH features for JID {jid} from {asph_features_path}: {e}. Returning zeros.")
-            asph_features = torch.zeros(getattr(config, 'ASPH_FEATURE_DIM', 3115), dtype=torch.float)
-        return asph_features
 
 def custom_collate_fn(batch_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     print(f"[COLLATE] custom_collate_fn called with batch_list of size {len(batch_list)}")
@@ -536,7 +495,6 @@ def custom_collate_fn(batch_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     # Note: Labels are now `topology_label` and `magnetism_label`
     crystal_graphs = [d['crystal_graph'] for d in batch_list]
     kspace_graphs = [d['kspace_graph'] for d in batch_list]
-    asph_features = torch.stack([d['asph_features'] for d in batch_list])
     scalar_features = torch.stack([d['scalar_features'] for d in batch_list])
     topology_labels_batch_individual = [d['topology_label'] for d in batch_list] # Keep as list of tensors for iteration
     magnetism_labels_batch_individual = [d['magnetism_label'] for d in batch_list] # Keep as list of tensors for iteration
@@ -596,7 +554,6 @@ def custom_collate_fn(batch_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     collated_batch = { # Explicitly creating the dict to be returned
         'crystal_graph': batched_crystal_graph,
         'kspace_graph': batched_kspace_graph,
-        'asph_features': asph_features,
         'scalar_features': scalar_features,
         'kspace_physics_features': kspace_physics_features_collated,
         'topology_label': topology_labels_batch,
