@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from src.crazy_fusion_model import create_crazy_fusion_model
 from training.crazy_training import create_crazy_trainer
 from ensemble_training import train_ensemble_pipeline
-from optuna_hyperparam_search import run_hyperparameter_search
+# Hyperparameter optimization removed - using default configurations
 from baseline_models import run_baseline_pipeline
 from self_supervised_pretraining import run_pretraining_pipeline
 from automated_analysis import run_automated_analysis
@@ -49,22 +49,9 @@ class CrazyMLPipeline:
             )
             self.results['pretraining'] = pretrained_models
         
-        # Step 2: Hyperparameter optimization
-        if self.config.get('RUN_HYPERPARAM_SEARCH', True):
-            print("\n🔍 Step 2: Hyperparameter optimization...")
-            best_config, best_accuracy = run_hyperparameter_search(
-                train_loader, val_loader,
-                n_trials=self.config.get('N_TRIALS', 50),
-                n_epochs_per_trial=self.config.get('EPOCHS_PER_TRIAL', 20),
-                save_dir=os.path.join(save_dir, 'hyperparam_search')
-            )
-            self.results['hyperparam_search'] = {
-                'best_config': best_config,
-                'best_accuracy': best_accuracy
-            }
-            
-            # Update config with best hyperparameters
-            self.config.update(best_config)
+        # Step 2: Hyperparameter optimization (removed)
+        print("\n⏭️  Hyperparameter optimization removed - using default configurations")
+        best_config = self.config
         
         # Step 3: Train baseline models
         if self.config.get('RUN_BASELINES', True):
@@ -137,9 +124,8 @@ class CrazyMLPipeline:
         
         summary = {}
         
-        # Hyperparameter search results
-        if 'hyperparam_search' in self.results:
-            summary['best_hyperparam_accuracy'] = self.results['hyperparam_search']['best_accuracy']
+        # Hyperparameter search results (removed)
+        # summary['best_hyperparam_accuracy'] = "Hyperparameter optimization removed"
         
         # Baseline results
         if 'baselines' in self.results:
@@ -179,8 +165,8 @@ class CrazyMLPipeline:
         # Results summary
         text += "RESULTS:\n"
         
-        if 'hyperparam_search' in self.results:
-            text += f"  Best Hyperparameter Accuracy: {self.results['hyperparam_search']['best_accuracy']:.4f}\n"
+        # Hyperparameter search results removed
+        # text += f"  Best Hyperparameter Accuracy: {self.results['hyperparam_search']['best_accuracy']:.4f}\n"
         
         if 'baselines' in self.results:
             text += "  Baseline Models:\n"

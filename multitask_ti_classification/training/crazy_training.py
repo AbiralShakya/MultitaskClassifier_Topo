@@ -300,10 +300,13 @@ class CrazyTrainer:
         avg_loss = total_loss / len(val_loader)
         accuracy = 100. * correct / total
         
-        # Compute additional metrics
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            all_labels, all_predictions, average='weighted'
-        )
+        # Compute additional metrics with warning suppression
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                all_labels, all_predictions, average='weighted'
+            )
         
         metrics = {
             'precision': precision,
@@ -476,163 +479,117 @@ if __name__ == "__main__":
 
 
 def main_training_loop():
-    """Main training loop using the new Crazy Fusion Model architecture."""
-    
-    # Import real data loaders
-    import sys
-    import os
-    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'data'))
-    try:
-        from real_data_loaders import create_data_loaders, get_class_weights
-        REAL_DATA_AVAILABLE = True
-    except ImportError:
-        print("⚠️  Real data loaders not available, will use dummy data")
-        REAL_DATA_AVAILABLE = False
-    
-    # Configuration for the new architecture
-    config_dict = {
-        # Model architecture
-        'HIDDEN_DIM': 256,
-        'FUSION_DIM': 512,
-        'NUM_CLASSES': 3,  # 3 classes: trivial/semimetal/topological-insulator
-        'USE_CRYSTAL': True,
-        'USE_KSPACE': True,
-        'USE_SCALAR': True,
-        'USE_DECOMPOSITION': True,
-        'USE_SPECTRAL': True,
-        'CRYSTAL_INPUT_DIM': 92,
-        'KSPACE_INPUT_DIM': 2,
-        'SCALAR_INPUT_DIM': 200,
-        'DECOMPOSITION_INPUT_DIM': 100,
-        'K_EIGS': 64,
-        'CRYSTAL_LAYERS': 4,
-        'KSPACE_LAYERS': 3,
-        'SCALAR_BLOCKS': 3,
-        'FUSION_BLOCKS': 3,
-        'FUSION_HEADS': 8,
-        'KSPACE_GNN_TYPE': 'transformer',
-        
-        # Training hyperparameters
-        'LEARNING_RATE': 1e-3,
-        'WEIGHT_DECAY': 1e-4,
-        'FOCAL_ALPHA': 1.0,
-        'FOCAL_GAMMA': 2.0,
-        'SCHEDULER_T0': 15,
-        'SCHEDULER_T_MULT': 2,
-        'SCHEDULER_ETA_MIN': 1e-6,
-        
-        # Data augmentation parameters
-        'MIXUP_ALPHA': 0.2,
-        'CUTMIX_PROB': 0.5,
-        'FEATURE_MASK_PROB': 0.1,
-        'EDGE_DROPOUT': 0.1,
-        'NODE_FEATURE_NOISE': 0.05,
-        
-        # Data loading parameters
-        'BATCH_SIZE': 32,
-        'NUM_WORKERS': 4,
-        'MAX_CRYSTAL_NODES': 1000,
-        'MAX_KSPACE_NODES': 500,
-        
-        # Other settings
-        'USE_WANDB': False,
-        'SEED': 42
-    }
-    
+    """Main training loop using the new Crazy Fusion Model architecture with MaterialDataset pipeline."""
+    print("Starting main training loop (MaterialDataset pipeline)...")
+
+    # Import necessary modules
+    from helper.dataset import MaterialDataset, custom_collate_fn
+    from torch_geometric.loader import DataLoader as PyGDataLoader
+    import torch
+    import numpy as np
+    from sklearn.model_selection import train_test_split
+    import helper.config as config
+    from torch.utils.data import Subset
+
     # Set random seed
-    torch.manual_seed(config_dict['SEED'])
-    np.random.seed(config_dict['SEED'])
-    
+    torch.manual_seed(config.SEED)
+    np.random.seed(config.SEED)
+
+    # Set device
+    device = config.DEVICE
+    print(f"Using device: {device}")
+
+    # Load dataset with preloading enabled
+    print("Loading dataset with preloading...")
+    dataset = MaterialDataset(
+        master_index_path=config.MASTER_INDEX_PATH,
+        kspace_graphs_base_dir=config.KSPACE_GRAPHS_DIR,
+        data_root_dir=config.DATA_DIR,
+        dos_fermi_dir=config.DOS_FERMI_DIR,
+        preload=getattr(config, 'PRELOAD_DATASET', True)
+    )
+
+    if len(dataset) == 0:
+        raise RuntimeError("No data found! Please check your data paths and preprocessing.")
+
+    # Split dataset (stratified by combined_label if possible)
+    try:
+        combined_labels = [dataset[i]['combined_label'].item() for i in range(len(dataset))]
+        train_indices, temp_indices = train_test_split(
+            range(len(dataset)),
+            test_size=0.3,
+            random_state=config.SEED,
+            stratify=combined_labels
+        )
+        val_indices, test_indices = train_test_split(
+            temp_indices,
+            test_size=0.5,
+            random_state=config.SEED,
+            stratify=[combined_labels[i] for i in temp_indices]
+        )
+    except Exception as e:
+        print(f"Warning: Could not stratify dataset split due to error: {e}")
+        print("Falling back to random split without stratification.")
+        train_indices, temp_indices = train_test_split(
+            range(len(dataset)),
+            test_size=0.3,
+            random_state=config.SEED
+        )
+        val_indices, test_indices = train_test_split(
+            temp_indices,
+            test_size=0.5,
+            random_state=config.SEED
+        )
+
+    # Create data loaders
+    train_subset = Subset(dataset, train_indices)
+    val_subset = Subset(dataset, val_indices)
+    test_subset = Subset(dataset, test_indices)
+
+    train_loader = PyGDataLoader(
+        train_subset,
+        batch_size=config.BATCH_SIZE,
+        shuffle=True,
+        collate_fn=custom_collate_fn,
+        num_workers=config.NUM_WORKERS
+    )
+    val_loader = PyGDataLoader(
+        val_subset,
+        batch_size=config.BATCH_SIZE,
+        shuffle=False,
+        collate_fn=custom_collate_fn,
+        num_workers=config.NUM_WORKERS
+    )
+    test_loader = PyGDataLoader(
+        test_subset,
+        batch_size=config.BATCH_SIZE,
+        shuffle=False,
+        collate_fn=custom_collate_fn,
+        num_workers=config.NUM_WORKERS
+    )
+
+    print(f"[DEBUG] DataLoaders created successfully")
+    print(f"[DEBUG] Train loader length: {len(train_loader)}")
+    print(f"[DEBUG] Testing first batch access...")
+    try:
+        first_batch = next(iter(train_loader))
+        print(f"[DEBUG] First batch accessed successfully with keys: {list(first_batch.keys())}")
+    except Exception as e:
+        print(f"[DEBUG] Error accessing first batch: {e}")
+        import traceback
+        traceback.print_exc()
+
     # Create model
-    model = create_crazy_fusion_model(config_dict)
+    model = create_crazy_fusion_model(vars(config))
     print(f"Created Crazy Fusion Model with {sum(p.numel() for p in model.parameters()):,} parameters")
-    
+
     # Create trainer with appropriate device
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    trainer = CrazyTrainer(model, config_dict, device=device)
-    
-    # Check if real data is available
-    from helper import config
-    data_dir = config.DATA_DIR / "processed"
-    
-    if REAL_DATA_AVAILABLE and data_dir.exists():
-        print("🎉 Using real data loaders with full augmentations!")
-        
-        # Create real data loaders with augmentations
-        modalities = ['crystal', 'kspace', 'scalar', 'decomposition', 'spectral']
-        
-        loaders = create_data_loaders(
-            data_dir=data_dir,
-            batch_size=config_dict['BATCH_SIZE'],
-            modalities=modalities,
-            num_workers=config_dict['NUM_WORKERS'],
-            augment=True,  # Enable all augmentations
-            mixup_alpha=config_dict['MIXUP_ALPHA'],
-            cutmix_prob=config_dict['CUTMIX_PROB'],
-            feature_mask_prob=config_dict['FEATURE_MASK_PROB'],
-            edge_dropout=config_dict['EDGE_DROPOUT'],
-            node_feature_noise=config_dict['NODE_FEATURE_NOISE']
-        )
-        
-        train_loader = loaders['train']
-        val_loader = loaders['val']
-        test_loader = loaders['test']
-        
-        # Get class weights for imbalanced dataset
-        class_weights = get_class_weights(data_dir)
-        print(f"Class weights: {class_weights}")
-        
-        # Update trainer with class weights
-        trainer.criterion = FocalLoss(
-            alpha=config_dict['FOCAL_ALPHA'],
-            gamma=config_dict['FOCAL_GAMMA']
-        )
-        
-    else:
-        print("⚠️  Real data not found, falling back to dummy data loaders")
-        print(f"Expected data directory: {data_dir}")
-        
-        # Create dummy data loaders as fallback
-        class DummyDataset(torch.utils.data.Dataset):
-            def __init__(self, size=1000):
-                self.size = size
-                self.data = []
-                for i in range(size):
-                    sample = {
-                        'crystal_x': torch.randn(50, 92),
-                        'crystal_edge_index': torch.randint(0, 50, (2, 100)).long(),
-                        'kspace_x': torch.randn(30, 2),
-                        'kspace_edge_index': torch.randint(0, 30, (2, 60)).long(),
-                        'scalar_features': torch.randn(200),
-                        'decomposition_features': torch.randn(100)
-                    }
-                    self.data.append((sample, torch.randint(0, config_dict['NUM_CLASSES'], (1,)).item()))
-            
-            def __len__(self):
-                return self.size
-            
-            def __getitem__(self, idx):
-                return self.data[idx]
-        
-        # Create datasets
-        train_dataset = DummyDataset(800)
-        val_dataset = DummyDataset(100)
-        test_dataset = DummyDataset(100)
-        
-        def custom_collate(batch):
-            """Custom collate function to handle edge indices properly."""
-            data, label = batch[0]
-            return data, torch.tensor([label])
-        
-        # Create data loaders with custom collate
-        train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, collate_fn=custom_collate)
-        val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, collate_fn=custom_collate)
-        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, collate_fn=custom_collate)
-    
+    trainer = CrazyTrainer(model, vars(config), device=device)
+
     # Train the model
-    trainer.train(train_loader, val_loader, num_epochs=50, save_path='best_crazy_model.pth')
-    
+    trainer.train(train_loader, val_loader, num_epochs=config.NUM_EPOCHS, save_path='best_crazy_model.pth')
+
     # Plot training curves
     trainer.plot_training_curves('crazy_training_curves.png')
-    
+
     print("Training completed successfully!") 

@@ -27,12 +27,8 @@ from sklearn.preprocessing import StandardScaler
 import warnings
 
 # Optional imports for advanced features
-try:
-    import optuna
-    OPTUNA_AVAILABLE = True
-except ImportError:
-    OPTUNA_AVAILABLE = False
-    warnings.warn("Optuna not available. Hyperparameter optimization will be disabled.")
+# Optuna removed - hyperparameter optimization disabled
+OPTUNA_AVAILABLE = False
 
 try:
     import wandb

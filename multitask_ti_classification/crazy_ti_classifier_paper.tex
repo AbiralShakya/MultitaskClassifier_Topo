@@ -45,7 +45,7 @@ Our pipeline consists of the following major components:
     \item \textbf{Advanced Data Augmentation:} Mixup, CutMix, and feature masking are applied during training to improve generalization and robustness.
     \item \textbf{Self-Supervised Pretraining:} GNN encoders are pretrained using node/edge prediction and contrastive learning tasks to leverage unlabeled data.
     \item \textbf{Ensemble Learning:} Multiple model variants are trained and combined using soft/hard/weighted voting to maximize predictive performance.
-    \item \textbf{Hyperparameter Optimization:} Optuna-based search is used to tune architecture and training parameters.
+    \item \textbf{Configuration:} Default configurations are used for all model and training parameters.
     \item \textbf{Automated Analysis:} The pipeline includes t-SNE/UMAP visualization, attention heatmaps, error analysis, and feature importance reporting.
     \item \textbf{Baselines:} XGBoost, LightGBM, Random Forest, and Logistic Regression models are trained on extracted features for comparison.
 \end{enumerate}
@@ -71,7 +71,7 @@ Our pipeline consists of the following major components:
     \item \textbf{Loss and Optimization:} Focal loss is used to address class imbalance. Training uses AdamW optimizer with cosine annealing and warm restarts.
     \item \textbf{Self-Supervised Pretraining:} GNN encoders are pretrained on node/edge prediction and contrastive tasks before supervised fine-tuning.
     \item \textbf{Ensemble Training:} Multiple model variants are trained with different seeds and hyperparameters, and their predictions are ensembled.
-    \item \textbf{Hyperparameter Search:} Optuna is used to optimize architecture and training parameters.
+    \item \textbf{Configuration:} Default configurations are used for all parameters.
 \end{itemize}
 
 \subsection{Automated Analysis and Baselines}
@@ -82,7 +82,7 @@ Our pipeline consists of the following major components:
 \end{itemize}
 
 \subsection{Implementation Details}
-The pipeline is implemented in Python using PyTorch, PyTorch Geometric, Optuna, and scikit-learn. All graph operations are GPU-accelerated. Dummy data loaders are used for initial testing; real data loaders are provided for production runs. The codebase is modular and extensible, supporting easy addition of new modalities or models.
+The pipeline is implemented in Python using PyTorch, PyTorch Geometric, and scikit-learn. All graph operations are GPU-accelerated. Dummy data loaders are used for initial testing; real data loaders are provided for production runs. The codebase is modular and extensible, supporting easy addition of new modalities or models.
 
 % -------------------
 % Results Section (Placeholder)
@@ -104,7 +104,7 @@ Our aggressive multimodal pipeline demonstrates the power of combining graph-bas
 The dataset is constructed from the Topological Quantum Chemistry database and related sources, comprising tens of thousands of materials labeled as trivial, semimetal, or topological insulator. Crystal structures, k-space data, and scalar descriptors are extracted and preprocessed. Data cleaning, conversion, and augmentation steps are automated in the pipeline.
 
 \subsection{Implementation Details}
-All models are implemented in PyTorch and PyTorch Geometric. Training is performed on modern GPUs. Hyperparameter search is managed by Optuna. Automated scripts are provided for data preprocessing, training, evaluation, and analysis. The codebase is open source and modular.
+All models are implemented in PyTorch and PyTorch Geometric. Training is performed on modern GPUs. Default configurations are used for all parameters. Automated scripts are provided for data preprocessing, training, evaluation, and analysis. The codebase is open source and modular.
 
 \section{Data Availability}
 The data used in this study is available from the Topological Quantum Chemistry database (\url{https://www.topologicalquantumchemistry.org/}) and related sources. Processed datasets and scripts will be made available upon publication.

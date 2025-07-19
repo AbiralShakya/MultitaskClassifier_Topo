@@ -229,8 +229,11 @@ class AutomatedAnalyzer:
         # Confusion matrix
         cm = confusion_matrix(true_labels, predictions)
         
-        # Classification report
-        report = classification_report(true_labels, predictions, output_dict=True)
+        # Classification report with warning suppression
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            report = classification_report(true_labels, predictions, output_dict=True)
         
         # Plot error analysis
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))

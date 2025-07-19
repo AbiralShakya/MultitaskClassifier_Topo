@@ -415,11 +415,14 @@ class BaselineModels:
                 predictions = model.predict(X_test)
                 probabilities = model.predict_proba(X_test)
             
-            # Calculate metrics
+            # Calculate metrics with warning suppression
             accuracy = accuracy_score(y_test, predictions)
-            precision, recall, f1, _ = precision_recall_fscore_support(
-                y_test, predictions, average='weighted'
-            )
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                precision, recall, f1, _ = precision_recall_fscore_support(
+                    y_test, predictions, average='weighted'
+                )
             
             test_results[name] = {
                 'accuracy': accuracy,

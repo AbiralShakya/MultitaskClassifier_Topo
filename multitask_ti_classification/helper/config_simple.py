@@ -12,10 +12,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 SEED = 1
 
 # --- Data Paths ---
-DATA_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_db_mp")
-KSPACE_GRAPHS_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs")
-MASTER_INDEX_PATH = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata")
-DOS_FERMI_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/pebr_tr_dos_rev5")
+# Use local paths instead of hardcoded server paths
+DATA_DIR = Path(__file__).parent.parent / "multimodal_materials_db_mp"
+KSPACE_GRAPHS_DIR = Path(__file__).parent.parent / "kspace_topology_graphs"
+MASTER_INDEX_PATH = Path(__file__).parent.parent / "metadata"
+DOS_FERMI_DIR = Path(__file__).parent.parent / "dos_fermi_data"
 
 # --- Topology Classification ---
 TOPOLOGY_CLASS_MAPPING = {
@@ -104,7 +105,7 @@ EPSILON_FOR_STD_DIVISION = 1e-8
 
 # Load irrep_unique file
 try:
-    with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
+    with open(Path(__file__).parent.parent / 'irrep_unique', 'rb') as fp:
         ALL_POSSIBLE_IRREPS = pickle.load(fp)
 except FileNotFoundError:
     warnings.warn("irrep_unique file not found. ALL_POSSIBLE_IRREPS will be empty.")

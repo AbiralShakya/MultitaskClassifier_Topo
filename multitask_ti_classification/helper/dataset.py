@@ -213,7 +213,12 @@ class MaterialDataset(Dataset):
         jid = row['jid']
 
         # --- 1. Load Crystal Graph ---
-        crystal_graph_path = Path('/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs') / jid / 'crystal_graph.pkl'
+        # Use config paths or fallback to relative paths
+        if hasattr(config, 'CRYSTAL_GRAPHS_DIR'):
+            crystal_graph_path = config.CRYSTAL_GRAPHS_DIR / jid / 'crystal_graph.pkl'
+        else:
+            # Fallback to relative path from project root
+            crystal_graph_path = config.PROJECT_ROOT.parent / 'crystal_graphs' / jid / 'crystal_graph.pkl'
         crystal_graph_dict = load_pickle_data(crystal_graph_path)
         crystal_graph = load_material_graph_from_dict(crystal_graph_dict)
         if crystal_graph.x is not None:
@@ -399,7 +404,12 @@ class MaterialDataset(Dataset):
         }
 
         # --- 4. Extract Scalar Features (Band Reps + Metadata, NOW EXCLUDING BAND GAP) ---
-        band_rep_features_path = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features") / jid / 'band_rep_features.npy'
+        # Use config paths or fallback to relative paths
+        if hasattr(config, 'VECTORIZED_FEATURES_DIR'):
+            band_rep_features_path = config.VECTORIZED_FEATURES_DIR / jid / 'band_rep_features.npy'
+        else:
+            # Fallback to relative path from project root
+            band_rep_features_path = config.PROJECT_ROOT.parent / 'vectorized_features' / jid / 'band_rep_features.npy'
         try:
             band_rep_features = torch.tensor(np.load(band_rep_features_path), dtype=torch.float)
             band_rep_features = self._check_and_handle_nan_inf(band_rep_features, f"band_rep_features", jid)

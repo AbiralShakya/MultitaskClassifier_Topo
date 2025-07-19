@@ -34,10 +34,27 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 SEED = 1
 
 # --- Data Paths ---
-DATA_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_db_mp")
-KSPACE_GRAPHS_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs")
-MASTER_INDEX_PATH = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata")
-DOS_FERMI_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/pebr_tr_dos_rev5")
+# Use environment variables or fallback to relative paths
+import os
+
+# Check if we're on the server (Della) or local machine
+if os.path.exists("/scratch/gpfs/as0714"):
+    # Server paths
+    DATA_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/multimodal_materials_db_mp")
+    KSPACE_GRAPHS_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/nonmagnetic_3d/kspace_topology_graphs")
+    MASTER_INDEX_PATH = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/metadata")
+    DOS_FERMI_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/pebr_tr_dos_rev5")
+    CRYSTAL_GRAPHS_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs")
+    VECTORIZED_FEATURES_DIR = Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/vectorized_features")
+else:
+    # Local paths - use relative paths from current directory
+    DATA_DIR = PROJECT_ROOT / "multimodal_materials_db_mp"
+    KSPACE_GRAPHS_DIR = PROJECT_ROOT / "kspace_topology_graphs"
+    MASTER_INDEX_PATH = PROJECT_ROOT / "metadata"
+    DOS_FERMI_DIR = PROJECT_ROOT / "dos_fermi_data"
+    CRYSTAL_GRAPHS_DIR = PROJECT_ROOT / "crystal_graphs"
+    VECTORIZED_FEATURES_DIR = PROJECT_ROOT / "vectorized_features"
+
 
 # --- Topology Classification ---
 TOPOLOGY_CLASS_MAPPING = {
@@ -143,16 +160,28 @@ MAX_DECOMPOSITION_INDICES_LEN = 100
 EPSILON_FOR_STD_DIVISION = 1e-8
 
 print("[DEBUG] config.py: About to load irrep_unique file...")
-try:
-    with open('/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique', 'rb') as fp:
-        ALL_POSSIBLE_IRREPS = pickle.load(fp)
-    print(f"[DEBUG] config.py: Successfully loaded irrep_unique with {len(ALL_POSSIBLE_IRREPS)} items")
-except FileNotFoundError:
-    warnings.warn("irrep_unique file not found. ALL_POSSIBLE_IRREPS will be empty. Decomposition features might be impacted.")
+# Try to load irrep_unique file from multiple possible locations
+irrep_paths = [
+    PROJECT_ROOT / "irrep_unique",  # Local project directory
+    Path("/scratch/gpfs/as0714/graph_vector_topological_insulator/multitask_ti_classification/irrep_unique"),  # Server path
+    PROJECT_ROOT.parent / "irrep_unique"  # Parent directory
+]
+
+ALL_POSSIBLE_IRREPS = []
+for irrep_path in irrep_paths:
+    try:
+        if irrep_path.exists():
+            with open(irrep_path, 'rb') as fp:
+                ALL_POSSIBLE_IRREPS = pickle.load(fp)
+            print(f"[DEBUG] config.py: Successfully loaded irrep_unique from {irrep_path} with {len(ALL_POSSIBLE_IRREPS)} items")
+            break
+    except Exception as e:
+        print(f"[DEBUG] config.py: Error loading irrep_unique from {irrep_path}: {e}")
+        continue
+
+if not ALL_POSSIBLE_IRREPS:
+    warnings.warn("irrep_unique file not found in any location. ALL_POSSIBLE_IRREPS will be empty. Decomposition features might be impacted.")
     print("[DEBUG] config.py: irrep_unique file not found, using empty list")
-except Exception as e:
-    print(f"[DEBUG] config.py: Error loading irrep_unique: {e}")
-    ALL_POSSIBLE_IRREPS = []
 
 DECOMPOSITION_FEATURE_DIM = BASE_DECOMPOSITION_FEATURE_DIM + \
                             len(ALL_POSSIBLE_IRREPS) + \

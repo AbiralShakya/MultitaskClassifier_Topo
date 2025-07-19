@@ -9,7 +9,7 @@ This pipeline implements a **complete ML workflow** that combines:
 1. **🤖 New Fundamental Architecture**: Multi-branch transformer fusion with cross-modal attention
 2. **🎭 Advanced Data Augmentation**: Mixup, CutMix, and feature masking
 3. **🏗️ Ensemble Training**: Multiple models with different architectures and seeds
-4. **🔍 Hyperparameter Optimization**: Optuna-based automated search
+4. **🔍 Hyperparameter Optimization**: Removed - using default configurations
 5. **📊 Baseline Models**: XGBoost, LightGBM, Random Forest comparison
 6. **🎓 Self-Supervised Pretraining**: Node/edge prediction and contrastive learning
 7. **📈 Automated Analysis**: t-SNE, UMAP, attention visualization, error analysis
@@ -75,14 +75,10 @@ ensemble, results = train_ensemble_pipeline(
 )
 ```
 
-#### Hyperparameter Search
+#### Hyperparameter Search (Removed)
 ```python
-from optuna_hyperparam_search import run_hyperparameter_search
-
-# Find best hyperparameters
-best_config, best_accuracy = run_hyperparameter_search(
-    train_loader, val_loader, n_trials=100
-)
+# Hyperparameter optimization has been removed from this version
+# Using default configurations for all parameters
 ```
 
 ## 📁 File Structure
@@ -95,7 +91,7 @@ multitask_ti_classification/
 ├── training/
 │   └── crazy_training.py          # Advanced training with augmentation
 ├── ensemble_training.py           # Ensemble training and prediction
-├── optuna_hyperparam_search.py    # Hyperparameter optimization
+├── optuna_hyperparam_search.py    # Removed - hyperparameter optimization disabled
 ├── baseline_models.py             # XGBoost/LightGBM baselines
 ├── self_supervised_pretraining.py # Self-supervised learning
 ├── automated_analysis.py          # t-SNE/UMAP and error analysis
@@ -141,7 +137,7 @@ config = {
 ```python
 config = {
     'RUN_PRETRAINING': False,       # Run self-supervised pretraining
-    'RUN_HYPERPARAM_SEARCH': True,  # Run hyperparameter optimization
+    'RUN_HYPERPARAM_SEARCH': False,  # Hyperparameter optimization removed
     'RUN_BASELINES': True,          # Train baseline models
     'RUN_ENSEMBLE': True,           # Train ensemble models
     'RUN_ANALYSIS': True,           # Run automated analysis
@@ -168,10 +164,10 @@ config = {
 - **Edge Prediction**: Predict edge existence
 - **Contrastive Learning**: Learn representations using graph augmentations
 
-### 4. Hyperparameter Optimization
-- **Optuna**: Bayesian optimization with TPE sampler
-- **Comprehensive Search**: Architecture, training, and fusion parameters
-- **Early Stopping**: Stop poor trials early to save time
+### 4. Hyperparameter Optimization (Removed)
+- **Status**: Hyperparameter optimization has been removed from this version
+- **Configuration**: Using default configurations for all parameters
+- **Reason**: Simplified pipeline for easier deployment and testing
 
 ### 5. Automated Analysis
 - **t-SNE/UMAP**: Visualize high-dimensional features

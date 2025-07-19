@@ -892,7 +892,10 @@ def main_training_loop():
         print(f"F1 Score (macro): {f1_score(all_targets, all_preds, average='macro'):.4f}")
         print(f"F1 Score (per class): {f1_score(all_targets, all_preds, average=None)}")
         print(f"Confusion Matrix:\n{confusion_matrix(all_targets, all_preds)}")
-        print(classification_report(all_targets, all_preds, digits=4))
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            print(classification_report(all_targets, all_preds, digits=4))
     
     evaluate(val_loader, "validation")
     evaluate(test_loader, "test")

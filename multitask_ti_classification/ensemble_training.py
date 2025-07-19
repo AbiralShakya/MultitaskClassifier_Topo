@@ -148,11 +148,14 @@ class EnsembleModel:
         """Evaluate ensemble performance."""
         predictions, probabilities = self.predict_ensemble(test_loader, method)
         
-        # Calculate metrics
+        # Calculate metrics with warning suppression
         accuracy = accuracy_score(true_labels, predictions)
-        precision, recall, f1, _ = precision_recall_fscore_support(
-            true_labels, predictions, average='weighted'
-        )
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            precision, recall, f1, _ = precision_recall_fscore_support(
+                true_labels, predictions, average='weighted'
+            )
         
         # Confusion matrix
         cm = confusion_matrix(true_labels, predictions)
