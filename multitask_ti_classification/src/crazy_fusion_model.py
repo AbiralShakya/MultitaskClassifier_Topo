@@ -560,7 +560,7 @@ if __name__ == "__main__":
         'USE_SPECTRAL': True,
         'CRYSTAL_INPUT_DIM': 92,
         'KSPACE_INPUT_DIM': 2,
-        'SCALAR_INPUT_DIM': 200,
+        'SCALAR_INPUT_DIM': 4763,
         'DECOMPOSITION_INPUT_DIM': 100,
         'K_EIGS': 64,
         'CRYSTAL_LAYERS': 4,

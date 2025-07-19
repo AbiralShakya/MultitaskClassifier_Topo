@@ -217,55 +217,66 @@ class CrazyTrainer:
         total_loss = 0.0
         correct = 0
         total = 0
-        
+
         pbar = tqdm(train_loader, desc=f"Epoch {self.current_epoch}")
-        
-        for batch_idx, (batch_data, labels) in enumerate(pbar):
+
+        for batch_idx, batch in enumerate(pbar):
             # Move to device
-            batch_data = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                         for k, v in batch_data.items()}
-            labels = labels.to(self.device)
-            
+            batch = {k: (v.to(self.device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+            # Extract labels (use 'topology_label' as main label; change if needed)
+            labels = batch['topology_label']
+
+            # Prepare batch_data (exclude label keys)
+            batch_data = {k: v for k, v in batch.items() if k not in ['topology_label', 'combined_label', 'magnetism_label']}
+
             # Apply augmentation with probability (simplified for now)
             lam = 1.0
             labels_b = labels
-            
+
             # Apply feature masking
             batch_data = self.feature_masking(batch_data)
-            
+
+            # # Print all batch keys and their shapes for debugging
+            # print(f"[DEBUG] Batch keys: {list(batch_data.keys())}")
+            # for k, v in batch_data.items():
+            #     if isinstance(v, torch.Tensor):
+            #         print(f"[DEBUG] batch_data['{k}'].shape: {v.shape}")
+            #     else:
+            #         print(f"[DEBUG] batch_data['{k}'] type: {type(v)}")
+
             # Forward pass
             self.optimizer.zero_grad()
             outputs = self.model(batch_data)
-            
+
             # Compute loss
             if lam != 1.0:
                 loss = lam * self.criterion(outputs, labels) + (1 - lam) * self.criterion(outputs, labels_b)
             else:
                 loss = self.criterion(outputs, labels)
-            
+
             # Backward pass
             loss.backward()
-            
+
             # Gradient clipping
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-            
+
             self.optimizer.step()
-            
+
             # Statistics
             total_loss += loss.item()
             _, predicted = outputs.max(1)
             total += labels.size(0)
             correct += predicted.eq(labels).sum().item()
-            
+
             # Update progress bar
             pbar.set_postfix({
                 'Loss': f'{loss.item():.4f}',
                 'Acc': f'{100. * correct / total:.2f}%'
             })
-        
+
         avg_loss = total_loss / len(train_loader)
         accuracy = 100. * correct / total
-        
+
         return avg_loss, accuracy
     
     def validate(self, val_loader: DataLoader) -> Tuple[float, float, Dict]:
@@ -278,11 +289,10 @@ class CrazyTrainer:
         all_labels = []
         
         with torch.no_grad():
-            for batch_data, labels in val_loader:
-                # Move to device
-                batch_data = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
-                             for k, v in batch_data.items()}
-                labels = labels.to(self.device)
+            for batch in val_loader:
+                batch = {k: (v.to(self.device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+                labels = batch['topology_label']  # or 'combined_label' if that's your main label
+                batch_data = {k: v for k, v in batch.items() if k not in ['topology_label', 'combined_label', 'magnetism_label']}
                 
                 # Forward pass
                 outputs = self.model(batch_data)
@@ -449,7 +459,7 @@ if __name__ == "__main__":
         'USE_SPECTRAL': True,
         'CRYSTAL_INPUT_DIM': 92,
         'KSPACE_INPUT_DIM': 2,
-        'SCALAR_INPUT_DIM': 200,
+        'SCALAR_INPUT_DIM': 4763,
         'DECOMPOSITION_INPUT_DIM': 100,
         'K_EIGS': 64,
         'CRYSTAL_LAYERS': 4,

@@ -216,7 +216,7 @@ def create_crazy_config() -> Dict:
         'USE_SPECTRAL': True,
         'CRYSTAL_INPUT_DIM': 92,
         'KSPACE_INPUT_DIM': 2,
-        'SCALAR_INPUT_DIM': 200,
+        'SCALAR_INPUT_DIM': 4763,
         'DECOMPOSITION_INPUT_DIM': 100,
         'K_EIGS': 128,
         'CRYSTAL_LAYERS': 5,

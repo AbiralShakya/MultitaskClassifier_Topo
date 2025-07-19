@@ -125,6 +125,8 @@ MAX_GRAD_NORM = 1.0  # Increased from 0.5 for better gradient flow
 EGNN_HIDDEN_IRREPS_STR = "64x0e + 32x1o + 16x2e"
 EGNN_RADIUS = 5.0
 
+SCALAR_INPUT_DIM = 4763
+
 # --- Loss weighting for multi-task learning ---
 LOSS_WEIGHT_PRIMARY_COMBINED = 1.0
 LOSS_WEIGHT_TOPOLOGY = 1.0

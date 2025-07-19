@@ -270,7 +270,7 @@ def create_ensemble_configs() -> List[Dict]:
         'NUM_CLASSES': 2,
         'CRYSTAL_INPUT_DIM': 92,
         'KSPACE_INPUT_DIM': 2,
-        'SCALAR_INPUT_DIM': 200,
+        'SCALAR_INPUT_DIM': 4763,
         'DECOMPOSITION_INPUT_DIM': 100,
         'K_EIGS': 64,
         'MIXUP_ALPHA': 0.2,
