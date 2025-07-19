@@ -1,3 +1,21 @@
+# Recommended best-bet config for all modalities, TransformerConv, attention+gated fusion, moderate fusion MLP, 8 GNN layers, 4 crystal layers.
+
+USE_CRYSTAL = True
+USE_KSPACE = False
+USE_SCALAR = True
+USE_DECOMPOSITION = True  # Try False for ablation
+
+KSPACE_GNN_TYPE = 'transformer'  # Options: 'transformer', 'gcn', 'gat', 'sage'
+FUSION_HIDDEN_DIMS = [1024, 512, 128]
+FUSION_DROPOUT = 0.1
+GNN_NUM_LAYERS = 8
+crystal_encoder_num_layers = 4
+LEARNING_RATE = 5e-4
+DROPOUT_RATE = 0.1
+BATCH_SIZE = 32
+LABEL_SMOOTHING = 0.1
+PATIENCE = 20
+
 # Updated for HybridTopoClassifier pipeline (CGCNN + ASPH + k-space GNN/Transformer/Physics)
 print("[DEBUG] config.py: Starting import")
 import os
@@ -57,7 +75,18 @@ crystal_encoder_radius = 4.0     # Increased from 3.0
 crystal_encoder_num_scales = 3   # Increased from 1 (enable multi-scale)
 crystal_encoder_use_topological_features = True  # Enable topological feature extraction
 
-FUSION_HIDDEN_DIMS = [2048, 1024, 512, 128]  # Increased capacity
+# --- Modality Ablation Flags ---
+USE_CRYSTAL = True
+USE_KSPACE = True
+USE_SCALAR = True
+USE_DECOMPOSITION = True
+
+# --- K-space GNN Type ---
+KSPACE_GNN_TYPE = 'transformer'  # Options: 'transformer', 'gcn', 'gat', 'sage'
+
+# --- Fusion MLP Hyperparameters ---
+FUSION_HIDDEN_DIMS = [1024, 512, 128]  # Default, can be changed
+FUSION_DROPOUT = 0.1  # Default, can be changed
 
 # GNN specific
 GNN_NUM_LAYERS = 12  # Increased from 8

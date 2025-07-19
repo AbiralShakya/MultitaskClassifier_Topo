@@ -12,6 +12,7 @@ import math
 import numpy as np
 
 import helper.config as config
+from torch_geometric.nn import GCNConv, GATConv, SAGEConv
 
 # --- Multi-Head Attention Mechanism ---
 class MultiHeadAttention(nn.Module):
@@ -324,6 +325,69 @@ class KSpaceTransformerGNNEncoder(nn.Module):
 
         return final_embedding
 
+class GCNEncoder(nn.Module):
+    def __init__(self, node_feature_dim, hidden_dim, out_channels, n_layers=8, num_heads=8):
+        super().__init__()
+        self.initial_projection = nn.Linear(node_feature_dim, hidden_dim)
+        self.layers = nn.ModuleList()
+        self.bns = nn.ModuleList()
+        for i in range(n_layers):
+            self.layers.append(GCNConv(hidden_dim, hidden_dim))
+            self.bns.append(nn.LayerNorm(hidden_dim))
+        self.final_projection = nn.Linear(hidden_dim, out_channels)
+    def forward(self, data: PyGData) -> torch.Tensor:
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = self.initial_projection(x)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, edge_index)
+            x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)
+        pooled_x = global_mean_pool(x, batch)
+        return self.final_projection(pooled_x)
+
+class GATEncoder(nn.Module):
+    def __init__(self, node_feature_dim, hidden_dim, out_channels, n_layers=8, num_heads=8):
+        super().__init__()
+        self.initial_projection = nn.Linear(node_feature_dim, hidden_dim)
+        self.layers = nn.ModuleList()
+        self.bns = nn.ModuleList()
+        for i in range(n_layers):
+            self.layers.append(GATConv(hidden_dim, hidden_dim // num_heads, heads=num_heads, dropout=config.DROPOUT_RATE))
+            self.bns.append(nn.LayerNorm(hidden_dim))
+        self.final_projection = nn.Linear(hidden_dim, out_channels)
+    def forward(self, data: PyGData) -> torch.Tensor:
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = self.initial_projection(x)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, edge_index)
+            x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)
+        pooled_x = global_mean_pool(x, batch)
+        return self.final_projection(pooled_x)
+
+class GraphSAGEEncoder(nn.Module):
+    def __init__(self, node_feature_dim, hidden_dim, out_channels, n_layers=8, num_heads=8):
+        super().__init__()
+        self.initial_projection = nn.Linear(node_feature_dim, hidden_dim)
+        self.layers = nn.ModuleList()
+        self.bns = nn.ModuleList()
+        for i in range(n_layers):
+            self.layers.append(SAGEConv(hidden_dim, hidden_dim))
+            self.bns.append(nn.LayerNorm(hidden_dim))
+        self.final_projection = nn.Linear(hidden_dim, out_channels)
+    def forward(self, data: PyGData) -> torch.Tensor:
+        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x = self.initial_projection(x)
+        for i, layer in enumerate(self.layers):
+            x = layer(x, edge_index)
+            x = self.bns[i](x)
+            x = F.relu(x)
+            x = F.dropout(x, p=config.DROPOUT_RATE, training=self.training)
+        pooled_x = global_mean_pool(x, batch)
+        return self.final_projection(pooled_x)
+
 # --- 3. Scalar Features Encoder ---
 
 class ScalarFeatureEncoder(nn.Module):
@@ -372,6 +436,15 @@ class DecompositionFeatureEncoder(nn.Module):
 
 # --- 5. Main Multi-Modal Classifier ---
 
+class GatedFusion(nn.Module):
+    def __init__(self, num_modalities):
+        super().__init__()
+        self.gate = nn.Parameter(torch.ones(num_modalities))
+    def forward(self, features):
+        # features: list of tensors [batch, dim]
+        gated = [f * torch.sigmoid(self.gate[i]) for i, f in enumerate(features)]
+        return torch.cat(gated, dim=-1)
+
 class MultiModalMaterialClassifier(nn.Module):
     """
     Enhanced multi-modal classifier for materials with attention, ensemble, and data augmentation.
@@ -418,13 +491,54 @@ class MultiModalMaterialClassifier(nn.Module):
             n_layers=egnn_num_layers,
             radius=egnn_radius,
         )
-        self.kspace_encoder = KSpaceTransformerGNNEncoder(
-            node_feature_dim=kspace_node_feature_dim,
-            hidden_dim=kspace_gnn_hidden_channels,
-            out_channels=latent_dim_gnn,
-            n_layers=kspace_gnn_num_layers,
-            num_heads=kspace_gnn_num_heads
-        )
+        self.active_modalities = []
+        self.modalities = []
+        if config.USE_CRYSTAL:
+            self.active_modalities.append('crystal')
+            self.modalities.append('crystal')
+        if config.USE_KSPACE:
+            self.active_modalities.append('kspace')
+            self.modalities.append('kspace')
+        if config.USE_SCALAR:
+            self.active_modalities.append('scalar')
+            self.modalities.append('scalar')
+        if config.USE_DECOMPOSITION:
+            self.active_modalities.append('decomposition')
+            self.modalities.append('decomposition')
+        print(f"[Model] Active modalities: {self.active_modalities}")
+        # K-space GNN selection
+        if config.KSPACE_GNN_TYPE == 'transformer':
+            self.kspace_encoder = KSpaceTransformerGNNEncoder(
+                node_feature_dim=kspace_node_feature_dim,
+                hidden_dim=kspace_gnn_hidden_channels,
+                out_channels=latent_dim_gnn,
+                n_layers=kspace_gnn_num_layers,
+                num_heads=kspace_gnn_num_heads
+            )
+        elif config.KSPACE_GNN_TYPE == 'gcn':
+            self.kspace_encoder = GCNEncoder(
+                node_feature_dim=kspace_node_feature_dim,
+                hidden_dim=kspace_gnn_hidden_channels,
+                out_channels=latent_dim_gnn,
+                n_layers=kspace_gnn_num_layers,
+                num_heads=kspace_gnn_num_heads
+            )
+        elif config.KSPACE_GNN_TYPE == 'gat':
+            self.kspace_encoder = GATEncoder(
+                node_feature_dim=kspace_node_feature_dim,
+                hidden_dim=kspace_gnn_hidden_channels,
+                out_channels=latent_dim_gnn,
+                n_layers=kspace_gnn_num_layers,
+                num_heads=kspace_gnn_num_heads
+            )
+        elif config.KSPACE_GNN_TYPE == 'sage':
+            self.kspace_encoder = GraphSAGEEncoder(
+                node_feature_dim=kspace_node_feature_dim,
+                hidden_dim=kspace_gnn_hidden_channels,
+                out_channels=latent_dim_gnn,
+                n_layers=kspace_gnn_num_layers,
+                num_heads=kspace_gnn_num_heads
+            )
         self.scalar_encoder = ScalarFeatureEncoder(
             input_dim=scalar_feature_dim,
             hidden_dims=ffnn_hidden_dims_scalar,
@@ -464,16 +578,28 @@ class MultiModalMaterialClassifier(nn.Module):
         self.topology_head = nn.Linear(1, num_topology_classes)  # Placeholder
         self.magnetism_head = nn.Linear(1, num_magnetism_classes)  # Placeholder
 
-    def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        # Encode each modality
-        crystal_emb = self.crystal_encoder(inputs['crystal_graph'])
-        kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
-        scalar_emb = self.scalar_encoder(inputs['scalar_features'])
-        decomposition_emb = self.decomposition_encoder(inputs['kspace_physics_features']['decomposition_features'])
+        # Gated fusion
+        self.gated_fusion = GatedFusion(len(self.active_modalities))
 
-        # Concatenate all features
-        features = [crystal_emb, kspace_emb, scalar_emb, decomposition_emb]
-        x = torch.cat(features, dim=-1)
+    def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        features = []
+        if 'crystal' in self.active_modalities:
+            features.append(self.crystal_encoder(inputs['crystal_graph']))
+        if 'kspace' in self.active_modalities:
+            features.append(self.kspace_encoder(inputs['kspace_graph']))
+        if 'scalar' in self.active_modalities:
+            features.append(self.scalar_encoder(inputs['scalar_features']))
+        if 'decomposition' in self.active_modalities:
+            features.append(self.decomposition_encoder(inputs['kspace_physics_features']['decomposition_features']))
+        # Gated fusion
+        fused = self.gated_fusion(features)
+        # Store for visualization
+        self.last_fused = fused.detach().cpu()
+        # Attention
+        x_reshaped = fused.unsqueeze(1)
+        x_attended = self.attention(x_reshaped)
+        self.last_attention = x_attended.detach().cpu()
+        x = x_attended.squeeze(1)
         
         # Feature normalization
         x = F.layer_norm(x, x.shape[1:])
