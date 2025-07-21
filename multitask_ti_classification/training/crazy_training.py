@@ -603,3 +603,27 @@ def main_training_loop():
     trainer.plot_training_curves('crazy_training_curves.png')
 
     print("Training completed successfully!") 
+    
+    from sklearn.metrics import f1_score, confusion_matrix, classification_report
+    def evaluate_and_print(loader, name):
+        model.eval()
+        all_preds = []
+        all_targets = []
+        with torch.no_grad():
+            for batch in loader:
+                batch = {k: (v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in batch.items()}
+                labels = batch['topology_label']
+                batch_data = {k: v for k, v in batch.items() if k not in ['topology_label', 'combined_label', 'magnetism_label']}
+                outputs = model(batch_data)
+                preds = outputs.argmax(dim=1).detach().cpu().numpy()
+                targs = labels.detach().cpu().numpy()
+                all_preds.extend(preds)
+                all_targets.extend(targs)
+        print(f"\n=== {name.upper()} SET RESULTS ===")
+        print(f"F1 Score (macro): {f1_score(all_targets, all_preds, average='macro'):.4f}")
+        print(f"F1 Score (per class): {f1_score(all_targets, all_preds, average=None)}")
+        print(f"Confusion Matrix:\n{confusion_matrix(all_targets, all_preds)}")
+        print(classification_report(all_targets, all_preds, digits=4))
+
+    evaluate_and_print(val_loader, "validation")
+    evaluate_and_print(test_loader, "test")
