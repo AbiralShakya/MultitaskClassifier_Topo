@@ -22,7 +22,7 @@ module load cudatoolkit/12.6
 source ~/.bashrc
 conda activate topological_ml 
 
-PROJECT_ROOT_DIR="$(pwd)"
+PROJECT_ROOT_DIR="/scratch/gpfs/as0714/graph_vector_topological_insulator/ti_magnetism_classification/multitask_ti_classification"
 
 export PYTHONPATH="${PYTHONPATH}:${PROJECT_ROOT_DIR}"
 cd "${PROJECT_ROOT_DIR}"

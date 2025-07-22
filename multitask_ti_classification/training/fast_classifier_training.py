@@ -47,23 +47,23 @@ class FastMultiModalMaterialClassifier(nn.Module):
         num_topology_classes: int = config.NUM_TOPOLOGY_CLASSES,
         num_magnetism_classes: int = config.NUM_MAGNETISM_CLASSES,
         # Crystal encoder params
-        crystal_encoder_hidden_dim: int = 128,
-        crystal_encoder_num_layers: int = 4,
-        crystal_encoder_output_dim: int = 128,
+        crystal_encoder_hidden_dim: int = 256,  # Increased
+        crystal_encoder_num_layers: int = 6,    # Increased
+        crystal_encoder_output_dim: int = 256,  # Increased
         crystal_encoder_radius: float = 5.0,
         crystal_encoder_num_scales: int = 3,
         crystal_encoder_use_topological_features: bool = True,
         # k-space GNN params
-        kspace_gnn_hidden_channels: int = config.GNN_HIDDEN_CHANNELS,
-        kspace_gnn_num_layers: int = config.GNN_NUM_LAYERS,
-        kspace_gnn_num_heads: int = config.KSPACE_GNN_NUM_HEADS,
-        latent_dim_gnn: int = config.LATENT_DIM_GNN,
+        kspace_gnn_hidden_channels: int = 256,  # Increased
+        kspace_gnn_num_layers: int = 8,         # Increased
+        kspace_gnn_num_heads: int = 16,         # Increased
+        latent_dim_gnn: int = 256,              # Increased
         # ASPH & scalar dims
-        latent_dim_asph: int = config.LATENT_DIM_ASPH,
-        latent_dim_other_ffnn: int = config.LATENT_DIM_OTHER_FFNN,
+        latent_dim_asph: int = 256,             # Increased
+        latent_dim_other_ffnn: int = 256,       # Increased
         # Fusion MLP
-        fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
-        dropout_rate: float = config.DROPOUT_RATE,
+        fusion_hidden_dims: List[int] = [2048, 1024, 512, 256, 128],  # Deeper/wider
+        dropout_rate: float = 0.1,
     ):
         super().__init__()
         # Store dims for fusion (FAST VERSION - no spectral or topological ML)

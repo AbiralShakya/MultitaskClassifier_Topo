@@ -24,118 +24,35 @@ from torch_geometric.data import Batch as PyGBatch
 from sklearn.metrics import accuracy_score
 
 # Core encoders
+# Enhanced integrated model with all improvements
+from src.enhanced_integrated_model import EnhancedIntegratedMaterialClassifier, create_enhanced_model
+from helper.enhanced_topological_loss import EnhancedTopologicalLoss, FocalLoss
+from encoders.enhanced_graph_construction import EnhancedGraphConstructor
+
+# Legacy imports for backward compatibility
 from helper.topological_crystal_encoder import TopologicalCrystalEncoder
 from src.model_w_debug import KSpaceTransformerGNNEncoder, ScalarFeatureEncoder
 from helper.kspace_physics_encoders import EnhancedKSpacePhysicsFeatures
-# GPU-accelerated spectral graph features
+from encoders.asph_encoder import ASPHEncoder
 from helper.gpu_spectral_encoder import GPUSpectralEncoder, FastSpectralEncoder
-# REMOVED: Topological ML encoder (expensive synthetic Hamiltonian generation)
-# from src.topological_ml_encoder import (
-#     TopologicalMLEncoder, TopologicalMLEncoder2D,
-#     create_hamiltonian_from_features, compute_topological_loss
-# )
+from src.topological_ml_encoder import (
+    TopologicalMLEncoder, TopologicalMLEncoder2D,
+    create_hamiltonian_from_features, compute_topological_loss
+)
 import helper.config as config
 import pickle
 import gc
 
-# Import for attention mechanism
-import math
+# Use the enhanced integrated model with all improvements
+from src.enhanced_integrated_model import EnhancedIntegratedMaterialClassifier
 
-class MultiHeadAttention(nn.Module):
-    """Multi-head attention mechanism for better feature fusion."""
-    def __init__(self, d_model, num_heads, dropout=0.1):
-        super().__init__()
-        assert d_model % num_heads == 0
-        
-        self.d_model = d_model
-        self.num_heads = num_heads
-        self.d_k = d_model // num_heads
-        
-        self.w_q = nn.Linear(d_model, d_model)
-        self.w_k = nn.Linear(d_model, d_model)
-        self.w_v = nn.Linear(d_model, d_model)
-        self.w_o = nn.Linear(d_model, d_model)
-        
-        self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(d_model)
-        
-    def scaled_dot_product_attention(self, Q, K, V, mask=None):
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
-        attention_weights = F.softmax(scores, dim=-1)
-        attention_weights = self.dropout(attention_weights)
-        output = torch.matmul(attention_weights, V)
-        return output, attention_weights
-    
-    def forward(self, x, mask=None):
-        batch_size = x.size(0)
-        
-        # Linear transformations
-        Q = self.w_q(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        K = self.w_k(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        V = self.w_v(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        
-        # Apply attention
-        attention_output, attention_weights = self.scaled_dot_product_attention(Q, K, V, mask)
-        
-        # Concatenate heads
-        attention_output = attention_output.transpose(1, 2).contiguous().view(
-            batch_size, -1, self.d_model
-        )
-        
-        # Final linear transformation
-        output = self.w_o(attention_output)
-        
-        # Residual connection and layer normalization
-        output = self.layer_norm(x + output)
-        
-        return output
-
-def mixup_data(x, y, alpha=0.2):
-    """Mixup data augmentation."""
-    if alpha > 0:
-        lam = np.random.beta(alpha, alpha)
-    else:
-        lam = 1
-
-    batch_size = x.size()[0]
-    index = torch.randperm(batch_size).to(x.device)
-
-    mixed_x = lam * x + (1 - lam) * x[index, :]
-    y_a, y_b = y, y[index]
-    return mixed_x, y_a, y_b, lam
-
-def mixup_criterion(criterion, pred, y_a, y_b, lam):
-    """Mixup loss function."""
-    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
-
-def add_feature_noise(features, noise_std=0.01):
-    """Add small noise to features for regularization."""
-    noise = torch.randn_like(features) * noise_std
-    return features + noise
-
-class FocalLoss(nn.Module):
-    """Focal Loss for better handling of class imbalance."""
-    def __init__(self, alpha=1, gamma=2, reduction='mean'):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        
-    def forward(self, inputs, targets):
-        ce_loss = F.cross_entropy(inputs, targets, reduction='none')
-        pt = torch.exp(-ce_loss)
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * ce_loss
-        
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
+# Simple working model for binary topology classification
 class EnhancedMultiModalMaterialClassifier(nn.Module):
+    """
+    Simple working model that uses essential components for binary topology classification.
+    Maintains compatibility with existing training code.
+    """
+    
     def __init__(
         self,
         # Feature dims
@@ -143,257 +60,141 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         kspace_node_feature_dim: int,
         scalar_feature_dim: int,
         decomposition_feature_dim: int,
-        # Class counts
+        # Class counts - ONLY topology, no magnetism
         num_topology_classes: int = config.NUM_TOPOLOGY_CLASSES,
-        # Crystal encoder params
-        crystal_encoder_hidden_dim: int = 128,
+        # Legacy parameters (for compatibility)
+        crystal_encoder_hidden_dim: int = 256,
         crystal_encoder_num_layers: int = 4,
-        crystal_encoder_output_dim: int = 128,
-        crystal_encoder_radius: float = 5.0,
-        crystal_encoder_num_scales: int = 3,
-        crystal_encoder_use_topological_features: bool = True,
-        # k-space GNN params
-        kspace_gnn_hidden_channels: int = config.GNN_HIDDEN_CHANNELS,
-        kspace_gnn_num_layers: int = config.GNN_NUM_LAYERS,
-        kspace_gnn_num_heads: int = config.KSPACE_GNN_NUM_HEADS,
-        latent_dim_gnn: int = config.LATENT_DIM_GNN,
-        # Scalar dims
-        latent_dim_other_ffnn: int = config.LATENT_DIM_OTHER_FFNN,
-        # Fusion MLP
-        fusion_hidden_dims: List[int] = config.FUSION_HIDDEN_DIMS,
-        dropout_rate: float = config.DROPOUT_RATE,
-        # Spectral dim
-        spectral_hidden: int = config.SPECTRAL_HID,
-        # Topological ML params
-        use_topo_ml: bool = True,
-        topological_ml_dim: int = 128,
-        topological_ml_k_points: int = 32,
-        topological_ml_model_type: str = "1d_a3",
-        topological_ml_auxiliary_weight: float = config.AUXILIARY_WEIGHT,
+        crystal_encoder_output_dim: int = 256,
+        kspace_gnn_hidden_channels: int = 256,
+        kspace_gnn_num_layers: int = 4,
+        kspace_gnn_num_heads: int = 8,
+        latent_dim_gnn: int = 256,
+        latent_dim_other_ffnn: int = 256,
+        fusion_hidden_dims: List[int] = [1024, 512, 256],
+        dropout_rate: float = 0.3,
+        spectral_hidden: int = 128,
+        use_topo_ml: bool = False,  # Disabled for stability
+        **kwargs
     ):
         super().__init__()
-        # Store dims for fusion
-        self._crystal_dim  = crystal_encoder_output_dim
-        self._kspace_dim   = latent_dim_gnn
-        self._scalar_dim   = latent_dim_other_ffnn
-        self._phys_dim     = latent_dim_other_ffnn
-        self._spec_dim     = spectral_hidden
-        self._topo_ml_dim  = topological_ml_dim if use_topo_ml else 0
-
-        # Instantiate encoders
-        self.crystal_encoder = TopologicalCrystalEncoder(
-            node_feature_dim=crystal_node_feature_dim,
-            hidden_dim=crystal_encoder_hidden_dim,
-            num_layers=crystal_encoder_num_layers,
-            output_dim=crystal_encoder_output_dim,
-            radius=crystal_encoder_radius,
-            num_scales=crystal_encoder_num_scales,
-            use_topological_features=crystal_encoder_use_topological_features
-        )
-        self.kspace_encoder = KSpaceTransformerGNNEncoder(
-            node_feature_dim=kspace_node_feature_dim,
-            hidden_dim=kspace_gnn_hidden_channels,
-            out_channels=latent_dim_gnn,
-            n_layers=kspace_gnn_num_layers,
-            num_heads=kspace_gnn_num_heads
-        )
-        self.scalar_encoder = ScalarFeatureEncoder(
-            input_dim=scalar_feature_dim,
-            hidden_dims=config.FFNN_HIDDEN_DIMS_SCALAR,
-            out_channels=latent_dim_other_ffnn
-        )
-        self.enhanced_kspace_physics_encoder = EnhancedKSpacePhysicsFeatures(
-            decomposition_dim=decomposition_feature_dim,
-            gap_features_dim=config.BAND_GAP_SCALAR_DIM,
-            dos_features_dim=config.DOS_FEATURE_DIM,
-            fermi_features_dim=config.FERMI_FEATURE_DIM,
-            output_dim=latent_dim_other_ffnn
-        )
-        # Use GPU-accelerated spectral encoder (much faster than CPU SciPy)
-        self.spectral_encoder = GPUSpectralEncoder(
-            k_eigs=config.K_LAPLACIAN_EIGS,
-            hidden=spectral_hidden
-        )
-
-        # REMOVED: Topological ML encoder (expensive synthetic Hamiltonian generation)
-        self.use_topo_ml = False  # Disable topological ML
-        self.topo_ml_aux_weight = 0.0  # No auxiliary weight needed
-
-        # Fusion MLP - will be dynamically created based on actual input dimensions
-        self.fusion_hidden_dims = fusion_hidden_dims
-        self.dropout_rate = dropout_rate
-        self.fusion_network = None  # Will be created in forward pass
         
-        # NEW: Attention mechanism for better feature fusion
-        self.attention_heads = 8
-        self.attention_dropout = 0.1
-        
-        # NEW: Data augmentation parameters
-        self.use_mixup = True
-        self.mixup_alpha = 0.2
-        self.feature_noise_std = 0.01
-        self.training = True
-
-        # Output heads - initialize with placeholder input dim (will update in forward if needed)
         self.num_topology_classes = num_topology_classes
-        self.topology_head = nn.Linear(1, self.num_topology_classes)
+        self.hidden_dim = crystal_encoder_hidden_dim
+        self.use_topo_ml = use_topo_ml
         
-        # NEW: Ensemble heads for better accuracy
-        self.ensemble_heads = []
-        self.num_ensemble_heads = 3
-
+        # Initialize essential encoders
+        self._init_encoders(
+            crystal_node_feature_dim, kspace_node_feature_dim, 
+            scalar_feature_dim, decomposition_feature_dim,
+            crystal_encoder_hidden_dim, kspace_gnn_hidden_channels,
+            kspace_gnn_num_layers, kspace_gnn_num_heads,
+            latent_dim_gnn, latent_dim_other_ffnn
+        )
+        
+        # Dynamic fusion network (created in forward pass)
+        self.fusion_net = None
+    
+    def _init_encoders(self, crystal_node_dim, kspace_node_dim, scalar_dim, 
+                      decomp_dim, crystal_hidden, kspace_hidden, kspace_layers,
+                      kspace_heads, kspace_out, scalar_out):
+        """Initialize essential encoders"""
+        
+        # Crystal encoder - use actual 3D input dimension
+        self.crystal_encoder = TopologicalCrystalEncoder(
+            node_feature_dim=3,  # Actual crystal graph node features
+            hidden_dim=crystal_hidden,
+            num_layers=4,
+            output_dim=crystal_hidden,
+            radius=5.0,
+            num_scales=3,
+            use_topological_features=True
+        )
+        
+        # K-space encoder
+        self.kspace_encoder = KSpaceTransformerGNNEncoder(
+            node_feature_dim=kspace_node_dim,
+            hidden_dim=kspace_hidden,
+            out_channels=kspace_out,
+            n_layers=kspace_layers,
+            num_heads=kspace_heads
+        )
+        
+        # Scalar encoder
+        self.scalar_encoder = ScalarFeatureEncoder(
+            input_dim=scalar_dim,
+            hidden_dims=[scalar_out * 2, scalar_out],
+            out_channels=scalar_out
+        )
+        
+        # Physics encoder
+        self.physics_encoder = EnhancedKSpacePhysicsFeatures(
+            decomposition_dim=decomp_dim,
+            gap_features_dim=getattr(config, 'BAND_GAP_SCALAR_DIM', 1),
+            dos_features_dim=getattr(config, 'DOS_FEATURE_DIM', 500),
+            fermi_features_dim=getattr(config, 'FERMI_FEATURE_DIM', 1),
+            output_dim=scalar_out
+        )
+        
+        # ASPH encoder - use ASPHEncoder with correct dimension (3115)
+        from encoders.asph_encoder import ASPHEncoder
+        self.asph_encoder = ASPHEncoder(
+            input_dim=3115,  # Actual ASPH feature dimension
+            hidden_dims=crystal_hidden,
+            out_dim=crystal_hidden // 2
+        )
+    
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        try:
-            # Encode each modality
-            crystal_emb, _, _ = self.crystal_encoder(
-                inputs['crystal_graph'], return_topological_logits=False
-            )
-            kspace_emb    = self.kspace_encoder(inputs['kspace_graph'])
-            scalar_emb    = self.scalar_encoder(inputs['scalar_features'])
-            phys_emb      = self.enhanced_kspace_physics_encoder(
-                decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
-                gap_features=inputs['kspace_physics_features'].get('gap_features'),
-                dos_features=inputs['kspace_physics_features'].get('dos_features'),
-                fermi_features=inputs['kspace_physics_features'].get('fermi_features')
-            )
-            # Smart spectral encoding with caching
-            try:
-                spec_emb = self.spectral_encoder(
-                    inputs['crystal_graph'].edge_index,
-                    inputs['crystal_graph'].num_nodes,
-                    getattr(inputs['crystal_graph'], 'batch', None)
-                )
-            except Exception as e:
-                print(f"Warning: Spectral encoding failed, using zeros: {e}")
-                spec_emb = torch.zeros(kspace_emb.shape[0], self._spec_dim, device=kspace_emb.device) 
-
-            # REMOVED: Topological ML features (expensive synthetic Hamiltonian generation)
-            ml_emb, ml_logits = None, None
-
-            # Concatenate all
-            features = [crystal_emb, kspace_emb, scalar_emb, phys_emb, spec_emb]
-            if ml_emb is not None:
-                features.append(ml_emb)
-            x = torch.cat(features, dim=-1)
-            
-            # --- ADD FEATURE NORMALIZATION ---
-            # Normalize features to prevent gradient explosion
-            x = F.layer_norm(x, x.shape[1:])
-            
-            # --- ADD DATA AUGMENTATION ---
-            if self.training:
-                # Add feature noise for regularization
-                x = add_feature_noise(x, self.feature_noise_std)
-            # ---------------------------------------------------
-            
-            # --- ADD DEBUGGING FOR FIRST FEW BATCHES ---
-            if not hasattr(self, '_debug_count'):
-                self._debug_count = 0
-            if self._debug_count < 3:
-                print(f"[DEBUG] Feature stats - min: {x.min():.4f}, max: {x.max():.4f}, mean: {x.mean():.4f}, std: {x.std():.4f}")
-                self._debug_count += 1
-            # ---------------------------------------------------
-
-            # Dynamically create fusion network if not exists
-            if self.fusion_network is None:
-                actual_input_dim = x.shape[1]
-                print(f"Creating fusion network with input dimension: {actual_input_dim}")
-                
-                # Create attention mechanism
-                self.attention = MultiHeadAttention(
-                    d_model=actual_input_dim,
-                    num_heads=self.attention_heads,
-                    dropout=self.attention_dropout
-                ).to(x.device)
-                
-                # Create fusion MLP
-                layers = []
-                in_dim = actual_input_dim
-                for h in self.fusion_hidden_dims:
-                    layers += [nn.Linear(in_dim, h), nn.LayerNorm(h), nn.ReLU(), nn.Dropout(self.dropout_rate)]
-                    in_dim = h
-                self.fusion_network = nn.Sequential(*layers).to(x.device)
-                
-                # Update output heads to match new input dim
-                self.topology_head = nn.Linear(in_dim, self.num_topology_classes).to(x.device)
-                
-                # Create ensemble heads
-                self.ensemble_heads = []
-                for i in range(self.num_ensemble_heads):
-                    head = nn.Sequential(
-                        nn.Linear(in_dim, in_dim // 2),
-                        nn.ReLU(),
-                        nn.Dropout(0.2),
-                        nn.Linear(in_dim // 2, self.num_topology_classes)
-                    ).to(x.device)
-                    self.ensemble_heads.append(head)
-
-            # Apply attention mechanism for better feature interaction
-            x_reshaped = x.unsqueeze(1)  # Add sequence dimension for attention
-            x_attended = self.attention(x_reshaped)
-            x = x_attended.squeeze(1)  # Remove sequence dimension
-            
-            fused = self.fusion_network(x)
-            
-            # --- ADD GRADIENT CLIPPING TO FUSED FEATURES ---
-            fused = torch.clamp(fused, -10, 10)  # Prevent extreme values
-            
-            # --- ADD DEBUGGING FOR FUSED FEATURES ---
-            if self._debug_count < 3:
-                print(f"[DEBUG] Fused stats - min: {fused.min():.4f}, max: {fused.max():.4f}, mean: {fused.mean():.4f}, std: {fused.std():.4f}")
-            # ---------------------------------------------------
-
-            # Main head
-            main_logits = self.topology_head(fused)
-            
-            # Ensemble heads
-            ensemble_logits = []
-            for head in self.ensemble_heads:
-                ensemble_logits.append(head(fused))
-            
-            # Average ensemble predictions
-            ensemble_logits = torch.stack(ensemble_logits)
-            ensemble_logits = torch.mean(ensemble_logits, dim=0)
-            
-            # Combine main and ensemble predictions
-            final_logits = 0.7 * main_logits + 0.3 * ensemble_logits
-
-            return {
-                'logits': final_logits,
-                'main_logits': main_logits,
-                'ensemble_logits': ensemble_logits
-            }
-        except Exception as e:
-            print(f"ERROR in forward pass: {e}")
-            import traceback
-            traceback.print_exc()
-            raise e
-
+        """Forward pass using essential encoders"""
+        
+        # Encode each modality
+        crystal_emb, _, _ = self.crystal_encoder(
+            inputs['crystal_graph'], return_topological_logits=False
+        )
+        
+        kspace_emb = self.kspace_encoder(inputs['kspace_graph'])
+        
+        scalar_emb = self.scalar_encoder(inputs['scalar_features'])
+        
+        phys_emb = self.physics_encoder(
+            decomposition_features=inputs['kspace_physics_features']['decomposition_features'],
+            gap_features=inputs['kspace_physics_features'].get('gap_features'),
+            dos_features=inputs['kspace_physics_features'].get('dos_features'),
+            fermi_features=inputs['kspace_physics_features'].get('fermi_features')
+        )
+        
+        # ASPH features
+        asph_emb = self.asph_encoder(inputs['asph_features'])
+        
+        # Concatenate all features
+        features = [crystal_emb, kspace_emb, scalar_emb, phys_emb, asph_emb]
+        x = torch.cat(features, dim=-1)
+        
+        # Add feature noise during training for regularization
+        if self.training:
+            noise_std = 0.01  # Small noise to prevent overfitting
+            x = x + torch.randn_like(x) * noise_std
+        
+        # Much simpler fusion network to prevent overfitting
+        if self.fusion_net is None:
+            input_dim = x.shape[1]
+            print(f"Creating SIMPLE fusion network with input dimension: {input_dim}")
+            self.fusion_net = nn.Sequential(
+                nn.Dropout(0.7),  # Heavy dropout at input
+                nn.Linear(input_dim, 128),  # Much smaller hidden layer
+                nn.BatchNorm1d(128),
+                nn.ReLU(),
+                nn.Dropout(0.7),  # Heavy dropout
+                nn.Linear(128, self.num_topology_classes)  # Direct to output
+            ).to(x.device)
+        
+        logits = self.fusion_net(x)
+        
+        return {'logits': logits}
+    
     def compute_loss(self, predictions: Dict[str, torch.Tensor], targets: torch.Tensor) -> torch.Tensor:
-        if self.training and self.use_mixup:
-            # Apply mixup
-            mixed_features, targets_a, targets_b, lam = mixup_data(
-                predictions['logits'], targets, self.mixup_alpha
-            )
-            main_loss = mixup_criterion(F.cross_entropy, mixed_features, targets_a, targets_b, lam)
-            
-            # Add ensemble loss
-            ensemble_loss = 0
-            for i in range(self.num_ensemble_heads):
-                ensemble_loss += F.cross_entropy(predictions['ensemble_logits'], targets, label_smoothing=0.1)
-            ensemble_loss /= self.num_ensemble_heads
-            
-            return main_loss + 0.1 * ensemble_loss
-        else:
-            main_loss = F.cross_entropy(predictions['logits'], targets, label_smoothing=0.1)
-            
-            # Add ensemble loss
-            ensemble_loss = 0
-            for i in range(self.num_ensemble_heads):
-                ensemble_loss += F.cross_entropy(predictions['ensemble_logits'], targets, label_smoothing=0.1)
-            ensemble_loss /= self.num_ensemble_heads
-            
-            return main_loss + 0.1 * ensemble_loss
+        """Simple cross-entropy loss for binary topology classification"""
+        return F.cross_entropy(predictions['logits'], targets, label_smoothing=0.1)
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, train_losses, val_losses, 
@@ -572,20 +373,22 @@ def main_training_loop():
     )
     
     # Split dataset
-    # Get labels for stratification, with error handling
+    # Get topology labels for stratification (BINARY ONLY)
     try:
-        combined_labels = [dataset[i]['combined_label'].item() for i in range(len(dataset))]
+        topology_labels = [dataset[i]['topology_label'].item() for i in range(len(dataset))]
+        print(f"Topology label distribution: {np.bincount(topology_labels)}")
+        
         train_indices, temp_indices = train_test_split(
             range(len(dataset)), 
             test_size=0.3, 
             random_state=42,
-            stratify=combined_labels
+            stratify=topology_labels
         )
         val_indices, test_indices = train_test_split(
             temp_indices, 
             test_size=0.5, 
             random_state=42,
-            stratify=[combined_labels[i] for i in temp_indices]
+            stratify=[topology_labels[i] for i in temp_indices]
         )
     except Exception as e:
         print(f"Warning: Could not stratify dataset split due to error: {e}")
@@ -674,17 +477,9 @@ def main_training_loop():
         import traceback
         traceback.print_exc()
     
-    # Setup optimizer and scheduler using config values
-    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-4, eps=1e-8, betas=(0.9, 0.999))
-    
-    # Advanced learning rate scheduling with warmup
-    def warmup_cosine_schedule(epoch):
-        if epoch < 10:  # Warmup for first 10 epochs
-            return epoch / 10
-        else:  # Cosine annealing
-            return 0.5 * (1 + math.cos(math.pi * (epoch - 10) / (config.NUM_EPOCHS - 10)))
-    
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=warmup_cosine_schedule)
+    # Setup optimizer and scheduler with stronger regularization
+    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY, eps=1e-8)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=config.PATIENCE, factor=0.5, min_lr=1e-7)
     
     # Checkpoint functionality
     checkpoint_dir = "./checkpoints"

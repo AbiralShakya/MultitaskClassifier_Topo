@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 class PHTokenEncoder(nn.Module):
-    def __init__(self, input_dim=256, output_dim=256):
+    def __init__(self, input_dim=256, hidden_dims = 128, output_dim=256):
         super().__init__()
         # Optionally, a small MLP if you want to transform the token
         # self.mlp = nn.Linear(input_dim, output_dim)
