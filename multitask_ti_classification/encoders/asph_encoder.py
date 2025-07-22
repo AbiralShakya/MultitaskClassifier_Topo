@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class ASPHEncoder(nn.Module):
-    def __init__(self, input_dim=3115, out_dim=64):
+    def __init__(self, input_dim=3115, hidden_dims = 1024, out_dim=64):
         super().__init__()
         self.fc = nn.Sequential(
             nn.Linear(input_dim, 512),

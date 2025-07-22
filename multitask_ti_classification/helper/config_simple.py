@@ -57,7 +57,7 @@ crystal_encoder_use_topological_features = False  # Disabled for speed
 
 # DISABLE complex encoders that were added later
 USE_SPECTRAL_ENCODER = False
-USE_TOPOLOGICAL_ML = False
+USE_TOPOLOGICAL_ML = True
 USE_ENHANCED_PHYSICS = False
 
 FUSION_HIDDEN_DIMS = [256, 128]

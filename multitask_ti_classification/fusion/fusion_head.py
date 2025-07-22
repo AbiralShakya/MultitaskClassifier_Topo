@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class FusionHead(nn.Module):
-    def __init__(self, d_real=512, d_k=512, d_ph=256, d_attn_proj=512, d_fused=768, classifier_dims=[512, 256, 64, 1]):
+    def __init__(self, d_real=512, d_k=512, d_ph=256, d_attn_proj=512, d_fused=768, classifier_dims=[512, 256, 64, 3]):
         super().__init__()
         # Projection layers for cross-modal attention
         self.query_proj = nn.Linear(d_real, d_attn_proj)
@@ -27,7 +27,7 @@ class FusionHead(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(classifier_dims[1], classifier_dims[2]), # 256 -> 64
             nn.ReLU(),
-            nn.Linear(classifier_dims[2], classifier_dims[3])  # 64 -> 1 (logits for binary classification)
+            nn.Linear(classifier_dims[2], classifier_dims[3])  # 64 -> 3 (logits for three-class classification)
         )
 
     def forward(self, h_real, h_kspace, h_ph):
@@ -92,5 +92,5 @@ class FusionHead(nn.Module):
 
         # Final MLP classifier
         h_fused = self.pre_classifier_mlp(fused)
-        logits = self.classifier(h_fused).squeeze(-1) # (B) for BCEWithLogitsLoss
+        logits = self.classifier(h_fused) # (B, 3) for CrossEntropyLoss
         return logits

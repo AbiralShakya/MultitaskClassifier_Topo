@@ -218,6 +218,19 @@ class MaterialDataset(Dataset):
         crystal_graph_path = Path('/scratch/gpfs/as0714/graph_vector_topological_insulator/crystal_graphs') / jid / 'crystal_graph.pkl'
         crystal_graph_dict = load_pickle_data(crystal_graph_path)
         crystal_graph = load_material_graph_from_dict(crystal_graph_dict)
+        
+        # Add atomic numbers for enhanced features if available
+        if hasattr(crystal_graph, 'x') and crystal_graph.x is not None:
+            # Try to extract atomic numbers from node features or add them
+            if crystal_graph.x.shape[1] == 1:  # If only atomic numbers
+                atomic_numbers = crystal_graph.x.squeeze().long().tolist()
+                crystal_graph.atomic_numbers = atomic_numbers
+            elif not hasattr(crystal_graph, 'atomic_numbers'):
+                # Fallback: assume first feature is atomic number
+                atomic_numbers = crystal_graph.x[:, 0].long().tolist()
+                crystal_graph.atomic_numbers = atomic_numbers
+        
+        # Clean NaN/Inf values
         if crystal_graph.x is not None:
             crystal_graph.x = self._check_and_handle_nan_inf(crystal_graph.x, f"crystal_graph.x", jid)
         if crystal_graph.pos is not None:
@@ -477,7 +490,7 @@ class MaterialDataset(Dataset):
             asph_features = torch.tensor(asph_features, dtype=torch.float32)
         
         # Return as dictionary for the collate function
-        print(f"[DATASET] __getitem__ end: idx={idx}, JID={jid}")
+       # print(f"[DATASET] __getitem__ end: idx={idx}, JID={jid}")
         return {
             'crystal_graph': crystal_graph,
             'asph_features': asph_features,

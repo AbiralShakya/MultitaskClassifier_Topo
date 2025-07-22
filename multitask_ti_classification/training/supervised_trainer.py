@@ -5,8 +5,8 @@ from sklearn.metrics import roc_auc_score, accuracy_score
 import numpy as np
 
 def train_supervised(model, train_loader, val_loader, epochs, lr, class_weights=None):
-    # BCEWithLogitsLoss combines sigmoid and binary cross-entropy for stability
-    criterion = nn.BCEWithLogitsLoss(pos_weight=class_weights) # class_weights should be tensor for positive class
+    # CrossEntropyLoss for multi-class classification (3 classes: Trivial, TI, Semimetal)
+    criterion = nn.CrossEntropyLoss(weight=class_weights) # class_weights should be tensor with 3 elements
     # Auxiliary loss for band gap (if applicable)
     aux_criterion = nn.MSELoss() 
 
@@ -53,24 +53,24 @@ def train_supervised(model, train_loader, val_loader, epochs, lr, class_weights=
             for batch in val_loader:
                 batch.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
                 logits = model(batch)
-                preds = torch.sigmoid(logits).cpu().numpy()
+                preds = torch.softmax(logits, dim=1).argmax(dim=1).cpu().numpy()
                 targets = batch.y.cpu().numpy()
                 val_preds.extend(preds)
                 val_targets.extend(targets)
 
-        val_auc = roc_auc_score(val_targets, val_preds)
-        val_acc = accuracy_score(val_targets, (np.array(val_preds) > 0.5).astype(int))
+        # For multi-class, use accuracy instead of AUC
+        val_acc = accuracy_score(val_targets, val_preds)
         
-        print(f"Epoch {epoch} Val AUC: {val_auc:.4f}, Val Acc: {val_acc:.4f}")
+        print(f"Epoch {epoch} Val Acc: {val_acc:.4f}")
 
-        if val_auc > best_val_auc:
-            best_val_auc = val_auc
+        if val_acc > best_val_auc:  # Using accuracy as best metric now
+            best_val_auc = val_acc
             torch.save(model.state_dict(), "best_model.pt")
             print("Saved best model!")
 
 # To run training:
 # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # model = TopologicalMaterialModel(...).to(device)
-# # Calculate class weights: count negatives / count positives
-# pos_weight = torch.tensor([num_negative_samples / num_positive_samples]).to(device)
-# train_supervised(model, train_loader, val_loader, epochs=50, lr=1e-4, class_weights=pos_weight)
+# # Calculate class weights for 3 classes: [trivial_weight, ti_weight, semimetal_weight]
+# class_weights = torch.tensor([1.0, 1.0, 1.0]).to(device)  # Adjust based on class imbalance
+# train_supervised(model, train_loader, val_loader, epochs=50, lr=1e-4, class_weights=class_weights)
