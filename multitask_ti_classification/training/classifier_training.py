@@ -46,11 +46,14 @@ import gc
 # Use the enhanced integrated model with all improvements
 from src.enhanced_integrated_model import EnhancedIntegratedMaterialClassifier
 
-# Simple working model for binary topology classification
-class EnhancedMultiModalMaterialClassifier(nn.Module):
+# Import optimized classifier
+from models.optimized_classifier import OptimizedMaterialClassifier, EarlyStopping, CosineWarmupScheduler
+
+# Optimized Multi-Modal Material Classifier for 92%+ accuracy
+class EnhancedMultiModalMaterialClassifier(OptimizedMaterialClassifier):
     """
-    Simple working model that uses essential components for binary topology classification.
-    Maintains compatibility with existing training code.
+    Optimized classifier integrated into existing training workflow.
+    Designed for 92%+ accuracy without overfitting.
     """
     
     def __init__(
@@ -77,14 +80,24 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         use_topo_ml: bool = False,  # Disabled for stability
         **kwargs
     ):
-        super().__init__()
+        # Initialize optimized classifier with proper parameters
+        super().__init__(
+            crystal_node_feature_dim=3,  # Actual crystal dimension
+            kspace_node_feature_dim=kspace_node_feature_dim,
+            scalar_feature_dim=scalar_feature_dim,
+            decomposition_feature_dim=decomposition_feature_dim,
+            num_topology_classes=num_topology_classes,
+            hidden_dim=crystal_encoder_hidden_dim,
+            dropout_rate=dropout_rate
+        )
         
+        # Store legacy parameters for compatibility
         self.num_topology_classes = num_topology_classes
         self.hidden_dim = crystal_encoder_hidden_dim
         self.use_topo_ml = use_topo_ml
         
-        # Initialize essential encoders
-        self._init_encoders(
+        # Initialize essential encoders for compatibility
+        self._init_legacy_encoders(
             crystal_node_feature_dim, kspace_node_feature_dim, 
             scalar_feature_dim, decomposition_feature_dim,
             crystal_encoder_hidden_dim, kspace_gnn_hidden_channels,
@@ -92,15 +105,38 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
             latent_dim_gnn, latent_dim_other_ffnn
         )
         
-        # Dynamic fusion network (created in forward pass)
-        self.fusion_net = None
+        # Add attention mechanism for feature fusion
+        total_feature_dim = crystal_encoder_hidden_dim + latent_dim_gnn + latent_dim_other_ffnn + latent_dim_other_ffnn + (crystal_encoder_hidden_dim // 2)
+        
+        self.attention = nn.MultiheadAttention(
+            embed_dim=total_feature_dim,
+            num_heads=8,
+            dropout=dropout_rate,
+            batch_first=True
+        )
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(total_feature_dim, crystal_encoder_hidden_dim),
+            nn.BatchNorm1d(crystal_encoder_hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            
+            nn.Linear(crystal_encoder_hidden_dim, crystal_encoder_hidden_dim // 2),
+            nn.BatchNorm1d(crystal_encoder_hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            
+            nn.Linear(crystal_encoder_hidden_dim // 2, num_topology_classes)
+        )
     
-    def _init_encoders(self, crystal_node_dim, kspace_node_dim, scalar_dim, 
+    def _init_legacy_encoders(self, crystal_node_dim, kspace_node_dim, scalar_dim, 
                       decomp_dim, crystal_hidden, kspace_hidden, kspace_layers,
                       kspace_heads, kspace_out, scalar_out):
-        """Initialize essential encoders"""
+        """Initialize essential encoders for compatibility"""
         
         # Crystal encoder - use actual 3D input dimension
+        from helper.topological_crystal_encoder import TopologicalCrystalEncoder
         self.crystal_encoder = TopologicalCrystalEncoder(
             node_feature_dim=3,  # Actual crystal graph node features
             hidden_dim=crystal_hidden,
@@ -112,6 +148,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         )
         
         # K-space encoder
+        from src.model_w_debug import KSpaceTransformerGNNEncoder
         self.kspace_encoder = KSpaceTransformerGNNEncoder(
             node_feature_dim=kspace_node_dim,
             hidden_dim=kspace_hidden,
@@ -121,6 +158,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         )
         
         # Scalar encoder
+        from src.model_w_debug import ScalarFeatureEncoder
         self.scalar_encoder = ScalarFeatureEncoder(
             input_dim=scalar_dim,
             hidden_dims=[scalar_out * 2, scalar_out],
@@ -128,6 +166,7 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         )
         
         # Physics encoder
+        from helper.kspace_physics_encoders import EnhancedKSpacePhysicsFeatures
         self.physics_encoder = EnhancedKSpacePhysicsFeatures(
             decomposition_dim=decomp_dim,
             gap_features_dim=getattr(config, 'BAND_GAP_SCALAR_DIM', 1),
@@ -145,9 +184,9 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         )
     
     def forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        """Forward pass using essential encoders"""
+        """Forward pass with input format compatibility"""
         
-        # Encode each modality
+        # Encode each modality using existing encoders
         crystal_emb, _, _ = self.crystal_encoder(
             inputs['crystal_graph'], return_topological_logits=False
         )
@@ -170,31 +209,32 @@ class EnhancedMultiModalMaterialClassifier(nn.Module):
         features = [crystal_emb, kspace_emb, scalar_emb, phys_emb, asph_emb]
         x = torch.cat(features, dim=-1)
         
-        # Add feature noise during training for regularization
-        if self.training:
-            noise_std = 0.01  # Small noise to prevent overfitting
-            x = x + torch.randn_like(x) * noise_std
+        # Apply self-attention for feature interaction
+        features_unsqueezed = x.unsqueeze(1)  # Add sequence dimension
+        attended_features, _ = self.attention(
+            features_unsqueezed, features_unsqueezed, features_unsqueezed
+        )
+        features = attended_features.squeeze(1)  # Remove sequence dimension
         
-        # Much simpler fusion network to prevent overfitting
-        if self.fusion_net is None:
-            input_dim = x.shape[1]
-            print(f"Creating SIMPLE fusion network with input dimension: {input_dim}")
-            self.fusion_net = nn.Sequential(
-                nn.Dropout(0.7),  # Heavy dropout at input
-                nn.Linear(input_dim, 128),  # Much smaller hidden layer
-                nn.BatchNorm1d(128),
-                nn.ReLU(),
-                nn.Dropout(0.7),  # Heavy dropout
-                nn.Linear(128, self.num_topology_classes)  # Direct to output
-            ).to(x.device)
+        # Add residual connection
+        features = features + x
         
-        logits = self.fusion_net(x)
+        # Classification
+        logits = self.classifier(features)
         
-        return {'logits': logits}
+        return {
+            'logits': logits,
+            'features': features,
+            'crystal_emb': crystal_emb,
+            'kspace_emb': kspace_emb,
+            'scalar_emb': scalar_emb,
+            'phys_emb': phys_emb,
+            'asph_emb': asph_emb
+        }
     
     def compute_loss(self, predictions: Dict[str, torch.Tensor], targets: torch.Tensor) -> torch.Tensor:
-        """Simple cross-entropy loss for binary topology classification"""
-        return F.cross_entropy(predictions['logits'], targets, label_smoothing=0.1)
+        """Enhanced loss with focal loss and regularization"""
+        return super().compute_loss(predictions, targets, alpha=0.1)
 
 
 def save_checkpoint(model, optimizer, scheduler, epoch, best_val_loss, train_losses, val_losses, 
@@ -477,9 +517,30 @@ def main_training_loop():
         import traceback
         traceback.print_exc()
     
-    # Setup optimizer and scheduler with stronger regularization
-    optimizer = Adam(model.parameters(), lr=config.LEARNING_RATE, weight_decay=config.WEIGHT_DECAY, eps=1e-8)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', patience=config.PATIENCE, factor=0.5, min_lr=1e-7)
+    # Setup optimized optimizer and scheduler
+    from torch.optim import AdamW
+    optimizer = AdamW(
+        model.parameters(),
+        lr=config.LEARNING_RATE,
+        weight_decay=config.WEIGHT_DECAY,
+        betas=(0.9, 0.999),
+        eps=1e-8
+    )
+    
+    # Use cosine warmup scheduler for better convergence
+    scheduler = CosineWarmupScheduler(
+        optimizer,
+        warmup_epochs=5,
+        max_epochs=config.NUM_EPOCHS,
+        eta_min=1e-6
+    )
+    
+    # Enhanced early stopping
+    early_stopping = EarlyStopping(
+        patience=config.PATIENCE,
+        min_delta=0.001,
+        restore_best_weights=True
+    )
     
     # Checkpoint functionality
     checkpoint_dir = "./checkpoints"
@@ -519,13 +580,16 @@ def main_training_loop():
     patience_counter = 0
     
     for epoch in range(start_epoch, config.NUM_EPOCHS):
+        # Update learning rate with cosine warmup
+        current_lr = scheduler.step(epoch)
+        
         # Training phase
         model.train()
-        train_losses = []
+        epoch_train_losses = []
         train_correct = 0
         train_total = 0
         
-        print(f"Starting epoch {epoch+1}/{config.NUM_EPOCHS}")
+        print(f"Starting epoch {epoch+1}/{config.NUM_EPOCHS} (LR: {current_lr:.2e})")
         
         for batch_idx, batch in enumerate(train_loader):
             try:
@@ -552,13 +616,13 @@ def main_training_loop():
                 train_correct += (preds == targets).sum()
                 train_total += len(targets)
                 
-                # Backward pass
+                # Backward pass with gradient clipping
                 losses.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), config.MAX_GRAD_NORM)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-                train_losses.append(losses.item())
+                epoch_train_losses.append(losses.item())
                 
-                if batch_idx % 10 == 0:
+                if batch_idx % 20 == 0:
                     # Monitor GPU memory usage
                     if device.type == 'cuda':
                         gpu_memory_used = torch.cuda.memory_allocated(device) / 1024**3
@@ -572,12 +636,8 @@ def main_training_loop():
                               f"Loss: {losses.item():.4f}, Acc: {batch_acc:.4f}")
                 
                 # Clear cache periodically to prevent memory buildup
-                if batch_idx % 25 == 0 and device.type == 'cuda':  # More frequent cleanup
+                if batch_idx % 25 == 0 and device.type == 'cuda':
                     torch.cuda.empty_cache()
-                    # Clear spectral encoder cache to prevent memory buildup (if available)
-                    if hasattr(model, 'spectral_encoder') and model.spectral_encoder is not None and hasattr(model.spectral_encoder, 'clear_cache'):
-                        model.spectral_encoder.clear_cache()
-                    # Force garbage collection
                     import gc
                     gc.collect()
             except Exception as e:
@@ -586,9 +646,11 @@ def main_training_loop():
         
         # Validation phase
         model.eval()
-        val_losses = []
+        epoch_val_losses = []
         val_correct = 0
         val_total = 0
+        all_val_preds = []
+        all_val_targets = []
         
         with torch.no_grad():
             for batch in val_loader:
@@ -606,24 +668,34 @@ def main_training_loop():
                 outputs = model(batch)
                 targets = batch['topology_label']
                 losses = model.compute_loss(outputs, targets)
-                val_losses.append(losses.item())
+                epoch_val_losses.append(losses.item())
+                
                 # Compute accuracy for this batch
                 preds = outputs['logits'].argmax(dim=1).detach().cpu().numpy()
                 targs = batch['topology_label'].detach().cpu().numpy()
                 val_correct += (preds == targs).sum()
                 val_total += len(targs)
+                
+                all_val_preds.extend(preds)
+                all_val_targets.extend(targs)
         
-        avg_train_loss = np.mean(train_losses)
-        avg_val_loss = np.mean(val_losses)
+        # Calculate epoch metrics
+        avg_train_loss = np.mean(epoch_train_losses)
+        avg_val_loss = np.mean(epoch_val_losses)
         train_acc = train_correct / train_total if train_total > 0 else 0.0
         val_acc = val_correct / val_total if val_total > 0 else 0.0
+        
+        # Calculate F1 score for validation
+        from sklearn.metrics import f1_score
+        val_f1 = f1_score(all_val_targets, all_val_preds, average='macro')
+        
         # Append to loss history
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
         
         print(f"Epoch {epoch+1}/{config.NUM_EPOCHS}: "
               f"Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, "
-              f"Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+              f"Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}")
         
         # Save checkpoint every few epochs
         if (epoch + 1) % checkpoint_frequency == 0:
@@ -633,29 +705,22 @@ def main_training_loop():
         # Clean up GPU memory between epochs
         if device.type == 'cuda':
             torch.cuda.empty_cache()
-            # Clear spectral encoder cache to prevent memory buildup (if available)
-            if hasattr(model, 'spectral_encoder') and model.spectral_encoder is not None and hasattr(model.spectral_encoder, 'clear_cache'):
-                model.spectral_encoder.clear_cache()
-            # Force garbage collection
             import gc
             gc.collect()
             print(f"GPU memory after cleanup: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
         
-        # Learning rate scheduling
-        scheduler.step()
+        # Enhanced early stopping with best model restoration
+        if early_stopping(avg_val_loss, model):
+            print(f"Early stopping triggered after {epoch+1} epochs")
+            break
         
-        # Early stopping
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            patience_counter = 0
-            # Save best model
+        # Save best model based on validation accuracy
+        if val_acc > best_val_loss:  # Using val_acc instead of loss for best model
+            best_val_loss = val_acc
             torch.save(model.state_dict(), config.MODEL_SAVE_DIR / "best_model.pth")
-            print(f"New best model saved with validation loss: {best_val_loss:.4f}")
-        else:
-            patience_counter += 1
-            if patience_counter >= config.PATIENCE:
-                print(f"Early stopping triggered after {epoch+1} epochs")
-                break
+            print(f"✅ New best model saved with validation accuracy: {best_val_loss:.4f}")
+        
+        print("-" * 60)
     
     print("Training completed!")
     
@@ -683,17 +748,41 @@ def main_training_loop():
                 all_preds.extend(preds)
                 all_targets.extend(targs)
         print(f"\n=== {name.upper()} SET RESULTS ===")
-        print(f"Accuracy: {np.mean(np.array(all_preds) == np.array(all_targets)):.4f}")
-        print(f"F1 Score (macro): {f1_score(all_targets, all_preds, average='macro'):.4f}")
+        accuracy = np.mean(np.array(all_preds) == np.array(all_targets))
+        f1_macro = f1_score(all_targets, all_preds, average='macro')
+        
+        print(f"Accuracy: {accuracy:.4f}")
+        print(f"F1 Score (macro): {f1_macro:.4f}")
         print(f"F1 Score (per class): {f1_score(all_targets, all_preds, average=None)}")
         print(f"Confusion Matrix:\n{confusion_matrix(all_targets, all_preds)}")
         import warnings
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             print(classification_report(all_targets, all_preds, digits=4))
+        
+        return accuracy, f1_macro
+    
+    # Load best model for final evaluation
+    try:
+        model.load_state_dict(torch.load(config.MODEL_SAVE_DIR / "best_model.pth"))
+        print("Loaded best model for final evaluation")
+    except:
+        print("Could not load best model, using current model")
     
     evaluate(val_loader, "validation")
-    evaluate(test_loader, "test")
+    test_acc, test_f1 = evaluate(test_loader, "test")
+    
+    # Success metrics
+    print(f"\n🎯 FINAL RESULTS:")
+    print(f"Test Accuracy: {test_acc:.4f}")
+    print(f"Test F1 Score: {test_f1:.4f}")
+    
+    if test_acc >= 0.92:
+        print("🎉 SUCCESS: Achieved 92%+ test accuracy!")
+    else:
+        print(f"📈 Progress made. Need {(0.92 - test_acc)*100:.1f}% more accuracy.")
+    
+    return test_acc, test_f1
     
     # --- GPU MEMORY USAGE REPORT ---
     if device.type == 'cuda':
@@ -702,4 +791,4 @@ def main_training_loop():
         if max_mem < 1.0:
             print("[WARNING] GPU memory usage is very low (<1GB). This may indicate your model or batch size is too small, or tensors are not being moved to the GPU. Consider increasing batch size or model complexity if appropriate.")
     
-    return model
+    return test_acc, test_f1
