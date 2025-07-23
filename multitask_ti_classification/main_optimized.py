@@ -22,7 +22,7 @@ def main():
         test_acc, test_f1 = smart_main()
         
         print(f"\n🎯 FINAL RESULTS:")
-        print(f"Test Accuracy: {test_acc:.4f}")
+        print(f"Test Accuracy: {test_acc:.4f}") 
         print(f"Test F1 Score: {test_f1:.4f}")
         
         if test_acc >= 0.92:

@@ -28,6 +28,6 @@ export PYTHONPATH="${PYTHONPATH}:${PROJECT_ROOT_DIR}"
 cd "${PROJECT_ROOT_DIR}"
 
 echo "Starting Python training script at $(date)"
-python src/main.py
+python main_optimized.py
 
 echo "Python training script finished at $(date)"
