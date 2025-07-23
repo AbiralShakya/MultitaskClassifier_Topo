@@ -38,12 +38,12 @@ class ExtremeBoostClassifier(nn.Module):
     def __init__(self, dropout_rate=0.3):
         super().__init__()
         
-        # MUCH larger encoders
+        # More balanced encoders - avoid overly large models
         self.crystal_encoder = TopologicalCrystalEncoder(
             node_feature_dim=3,
-            hidden_dim=512,  # 2x larger
-            num_layers=6,    # 50% more layers
-            output_dim=512,
+            hidden_dim=384,  # Reduced from 512 to avoid overfitting
+            num_layers=4,    # Reduced from 6 to avoid overfitting
+            output_dim=384,
             radius=5.0,
             num_scales=3,
             use_topological_features=True
@@ -51,16 +51,16 @@ class ExtremeBoostClassifier(nn.Module):
         
         self.kspace_encoder = KSpaceTransformerGNNEncoder(
             node_feature_dim=config.KSPACE_NODE_FEATURE_DIM,
-            hidden_dim=512,  # 2x larger
-            out_channels=512,
-            n_layers=6,      # 50% more layers
-            num_heads=16     # 2x more heads
+            hidden_dim=384,  # Reduced from 512 to avoid overfitting
+            out_channels=384,
+            n_layers=4,      # Reduced from 6 to avoid overfitting
+            num_heads=8      # Reduced from 16 to avoid overfitting
         )
         
         self.scalar_encoder = ScalarFeatureEncoder(
             input_dim=config.SCALAR_TOTAL_DIM,
-            hidden_dims=[2048, 1024, 512],  # Much deeper
-            out_channels=512
+            hidden_dims=[1024, 768, 384],  # More balanced dimensions
+            out_channels=384
         )
         
         self.physics_encoder = EnhancedKSpacePhysicsFeatures(
@@ -68,17 +68,17 @@ class ExtremeBoostClassifier(nn.Module):
             gap_features_dim=getattr(config, 'BAND_GAP_SCALAR_DIM', 1),
             dos_features_dim=getattr(config, 'DOS_FEATURE_DIM', 500),
             fermi_features_dim=getattr(config, 'FERMI_FEATURE_DIM', 1),
-            output_dim=512
+            output_dim=384  # Match other encoders
         )
         
-        # Massive fusion network
-        total_dim = 512 * 4  # 2048
+        # More balanced fusion network
+        total_dim = 384 * 4  # 1536
         
-        # Multi-head cross-attention
+        # Multi-head cross-attention with more balanced parameters
         self.cross_attention = nn.ModuleList([
             nn.MultiheadAttention(
-                embed_dim=512,
-                num_heads=8,
+                embed_dim=384,
+                num_heads=6,
                 dropout=dropout_rate,
                 batch_first=True
             ) for _ in range(4)  # One for each modality
@@ -104,25 +104,25 @@ class ExtremeBoostClassifier(nn.Module):
             nn.Dropout(dropout_rate)
         )
         
-        # Deep classifier
+        # Deep classifier with LayerNorm instead of BatchNorm to handle small batches
         self.classifier = nn.Sequential(
             nn.Linear(total_dim, 1024),
-            nn.BatchNorm1d(1024),
+            nn.LayerNorm(1024),  # Replace BatchNorm with LayerNorm
             nn.GELU(),
             nn.Dropout(dropout_rate),
             
             nn.Linear(1024, 512),
-            nn.BatchNorm1d(512),
+            nn.LayerNorm(512),  # Replace BatchNorm with LayerNorm
             nn.GELU(),
             nn.Dropout(dropout_rate),
             
             nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),  # Replace BatchNorm with LayerNorm
             nn.GELU(),
             nn.Dropout(dropout_rate),
             
             nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
+            nn.LayerNorm(128),  # Replace BatchNorm with LayerNorm
             nn.GELU(),
             nn.Dropout(dropout_rate),
             
@@ -275,13 +275,17 @@ class CyclicCosineScheduler:
 
 
 def mixup_data(x, y, alpha=0.2):
-    """Mixup data augmentation"""
+    """Mixup data augmentation with safety checks"""
+    # Check batch size - don't do mixup for very small batches
+    batch_size = x.size(0)
+    if batch_size <= 1:
+        return x, y, y, 1.0
+    
     if alpha > 0:
         lam = np.random.beta(alpha, alpha)
     else:
         lam = 1
     
-    batch_size = x.size(0)
     index = torch.randperm(batch_size).to(x.device)
     
     mixed_x = lam * x + (1 - lam) * x[index, :]
@@ -295,78 +299,19 @@ def mixup_criterion(criterion, pred, y_a, y_b, lam):
 
 
 def train_epoch(model, loader, optimizer, device, use_mixup=True, mixup_alpha=0.2):
-    """Advanced training with mixup"""
+    """Advanced training with mixup and error handling"""
     model.train()
     total_loss = 0
     correct = 0
     total = 0
     
     for batch_idx, batch in enumerate(loader):
-        # Move to device
-        for key in batch:
-            if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device)
-            elif hasattr(batch[key], 'to'):
-                batch[key] = batch[key].to(device)
-            elif isinstance(batch[key], dict):
-                for sub_key in batch[key]:
-                    if isinstance(batch[key][sub_key], torch.Tensor):
-                        batch[key][sub_key] = batch[key][sub_key].to(device)
-        
-        # Forward pass
-        optimizer.zero_grad()
-        outputs = model(batch)
-        
-        # Apply mixup if enabled
-        if use_mixup and np.random.random() > 0.5:
-            # Apply mixup to features
-            mixed_features, y_a, y_b, lam = mixup_data(
-                outputs['features'], batch['topology_label'], alpha=mixup_alpha
-            )
-            
-            # Forward through classifier only
-            mixed_logits = model.classifier(mixed_features)
-            
-            # Compute mixup loss
-            loss = mixup_criterion(
-                lambda p, t: F.cross_entropy(p, t, reduction='none', label_smoothing=0.2),
-                mixed_logits, y_a, y_b, lam
-            ).mean()
-            
-            # Use original predictions for accuracy calculation
-            preds = outputs['logits'].argmax(dim=1)
-        else:
-            # Standard forward pass
-            loss = model.compute_loss(outputs, batch['topology_label'])
-            preds = outputs['logits'].argmax(dim=1)
-        
-        # Backward pass
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        
-        # Statistics
-        total_loss += loss.item()
-        correct += (preds == batch['topology_label']).sum().item()
-        total += len(batch['topology_label'])
-        
-        if batch_idx % 50 == 0:
-            print(f"Batch {batch_idx}/{len(loader)}, "
-                  f"Loss: {loss.item():.4f}, "
-                  f"Acc: {(preds == batch['topology_label']).float().mean().item():.4f}")
-    
-    return total_loss / len(loader), correct / total
-
-
-def validate_epoch(model, loader, device, tta_samples=5):
-    """Advanced validation with test-time augmentation"""
-    model.eval()
-    total_loss = 0
-    all_preds = []
-    all_targets = []
-    
-    with torch.no_grad():
-        for batch in loader:
+        try:
+            # Check batch size - skip very small batches
+            if len(batch['topology_label']) <= 1:
+                print(f"Skipping batch {batch_idx} with size {len(batch['topology_label'])}")
+                continue
+                
             # Move to device
             for key in batch:
                 if isinstance(batch[key], torch.Tensor):
@@ -378,27 +323,122 @@ def validate_epoch(model, loader, device, tta_samples=5):
                         if isinstance(batch[key][sub_key], torch.Tensor):
                             batch[key][sub_key] = batch[key][sub_key].to(device)
             
-            # Test-time augmentation
-            all_logits = []
+            # Forward pass
+            optimizer.zero_grad()
+            outputs = model(batch)
             
-            for _ in range(tta_samples):
-                outputs = model(batch)
-                all_logits.append(outputs['logits'])
+            # Apply mixup if enabled and batch size is sufficient
+            if use_mixup and np.random.random() > 0.5 and len(batch['topology_label']) > 2:
+                # Apply mixup to features
+                mixed_features, y_a, y_b, lam = mixup_data(
+                    outputs['features'], batch['topology_label'], alpha=mixup_alpha
+                )
+                
+                # Forward through classifier only
+                mixed_logits = model.classifier(mixed_features)
+                
+                # Compute mixup loss
+                loss = mixup_criterion(
+                    lambda p, t: F.cross_entropy(p, t, reduction='none', label_smoothing=0.2),
+                    mixed_logits, y_a, y_b, lam
+                ).mean()
+                
+                # Use original predictions for accuracy calculation
+                preds = outputs['logits'].argmax(dim=1)
+            else:
+                # Standard forward pass
+                loss = model.compute_loss(outputs, batch['topology_label'])
+                preds = outputs['logits'].argmax(dim=1)
             
-            # Average predictions
-            avg_logits = torch.stack(all_logits).mean(dim=0)
+            # Backward pass
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
             
-            # Compute loss
-            loss = F.cross_entropy(avg_logits, batch['topology_label'])
+            # Statistics
             total_loss += loss.item()
+            correct += (preds == batch['topology_label']).sum().item()
+            total += len(batch['topology_label'])
             
-            # Get predictions
-            preds = avg_logits.argmax(dim=1)
-            
-            all_preds.extend(preds.cpu().numpy())
-            all_targets.extend(batch['topology_label'].cpu().numpy())
+            if batch_idx % 50 == 0:
+                print(f"Batch {batch_idx}/{len(loader)}, "
+                      f"Loss: {loss.item():.4f}, "
+                      f"Acc: {(preds == batch['topology_label']).float().mean().item():.4f}")
+                
+        except Exception as e:
+            print(f"Error in batch {batch_idx}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue
     
-    avg_loss = total_loss / len(loader)
+    if total == 0:  # Avoid division by zero
+        return 0.0, 0.0
+        
+    return total_loss / len(loader), correct / total
+
+
+def validate_epoch(model, loader, device, tta_samples=5):
+    """Advanced validation with test-time augmentation and error handling"""
+    model.eval()
+    total_loss = 0
+    all_preds = []
+    all_targets = []
+    batch_count = 0
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(loader):
+            try:
+                # Check batch size - skip very small batches
+                if len(batch['topology_label']) <= 1:
+                    print(f"Skipping validation batch {batch_idx} with size {len(batch['topology_label'])}")
+                    continue
+                    
+                # Move to device
+                for key in batch:
+                    if isinstance(batch[key], torch.Tensor):
+                        batch[key] = batch[key].to(device)
+                    elif hasattr(batch[key], 'to'):
+                        batch[key] = batch[key].to(device)
+                    elif isinstance(batch[key], dict):
+                        for sub_key in batch[key]:
+                            if isinstance(batch[key][sub_key], torch.Tensor):
+                                batch[key][sub_key] = batch[key][sub_key].to(device)
+                
+                # Test-time augmentation
+                all_logits = []
+                
+                for _ in range(tta_samples):
+                    outputs = model(batch)
+                    all_logits.append(outputs['logits'])
+                
+                # Average predictions
+                avg_logits = torch.stack(all_logits).mean(dim=0)
+                
+                # Compute loss
+                loss = F.cross_entropy(avg_logits, batch['topology_label'])
+                total_loss += loss.item()
+                batch_count += 1
+                
+                # Get predictions
+                preds = avg_logits.argmax(dim=1)
+                
+                all_preds.extend(preds.cpu().numpy())
+                all_targets.extend(batch['topology_label'].cpu().numpy())
+                
+            except Exception as e:
+                print(f"Error in validation batch {batch_idx}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+    
+    if batch_count == 0:  # Avoid division by zero
+        return 0.0, 0.0, 0.0, [], []
+        
+    avg_loss = total_loss / batch_count
+    
+    if len(all_preds) == 0:  # No valid predictions
+        return avg_loss, 0.0, 0.0, [], []
+        
     accuracy = accuracy_score(all_targets, all_preds)
     f1 = f1_score(all_targets, all_preds, average='macro')
     
@@ -437,7 +477,8 @@ def k_fold_cross_validation(dataset, n_splits=5, batch_size=16, num_workers=4, d
             batch_size=batch_size,
             shuffle=True,
             collate_fn=custom_collate_fn,
-            num_workers=num_workers
+            num_workers=num_workers,
+            drop_last=True  # Drop the last batch if it's smaller than batch_size
         )
         
         val_loader = PyGDataLoader(
@@ -451,22 +492,22 @@ def k_fold_cross_validation(dataset, n_splits=5, batch_size=16, num_workers=4, d
         # Create model
         model = ExtremeBoostClassifier().to(device)
         
-        # Optimizer
+        # Optimizer with improved settings
         optimizer = AdamW(
             model.parameters(),
-            lr=1e-4,  # Lower initial LR for stability
-            weight_decay=1e-4,
+            lr=5e-5,  # Even lower initial LR for better stability
+            weight_decay=2e-4,  # Slightly higher weight decay to prevent overfitting
             betas=(0.9, 0.999),
             eps=1e-8
         )
         
-        # Scheduler
+        # Scheduler with improved settings
         scheduler = CyclicCosineScheduler(
             optimizer,
-            warmup_epochs=5,
+            warmup_epochs=10,  # Longer warmup for better stability
             cycle_epochs=15,
             min_lr=1e-6,
-            max_lr=2e-4,
+            max_lr=1e-4,  # Lower max LR for better stability
             cycles=2
         )
         
@@ -605,7 +646,7 @@ def main():
     # Create test loader
     test_loader = PyGDataLoader(
         Subset(dataset, test_idx),
-        batch_size=16,
+        batch_size=32,  # Increased batch size for better stability
         shuffle=False,
         collate_fn=custom_collate_fn,
         num_workers=4
@@ -623,11 +664,11 @@ def main():
     # Create a subset for K-fold (use only train_val_idx)
     train_val_dataset = Subset(dataset, train_val_idx)
     
-    # Run K-fold cross-validation
+    # Run K-fold cross-validation with larger batch size
     best_kfold_model = k_fold_cross_validation(
         train_val_dataset,
         n_splits=5,
-        batch_size=16,
+        batch_size=32,  # Increased batch size for better stability
         num_workers=4,
         device=device
     )
@@ -658,15 +699,16 @@ def main():
         # Create data loaders
         train_loader = PyGDataLoader(
             Subset(dataset, train_idx),
-            batch_size=16,
+            batch_size=32,  # Increased batch size for better stability
             shuffle=True,
             collate_fn=custom_collate_fn,
-            num_workers=4
+            num_workers=4,
+            drop_last=True  # Drop the last batch if it's smaller than batch_size
         )
         
         val_loader = PyGDataLoader(
             Subset(dataset, val_idx),
-            batch_size=16,
+            batch_size=32,  # Increased batch size for better stability
             shuffle=False,
             collate_fn=custom_collate_fn,
             num_workers=4
@@ -675,22 +717,22 @@ def main():
         # Create model with different dropout
         model = ExtremeBoostClassifier(dropout_rate=0.3 + i*0.05).to(device)
         
-        # Optimizer
+        # Optimizer with improved settings
         optimizer = AdamW(
             model.parameters(),
-            lr=1e-4,
-            weight_decay=1e-4 * (1.0 + i*0.2),  # Different regularization
+            lr=5e-5,  # Lower initial LR for better stability
+            weight_decay=2e-4 * (1.0 + i*0.2),  # Different regularization with higher base value
             betas=(0.9, 0.999),
             eps=1e-8
         )
         
-        # Scheduler
+        # Scheduler with improved settings
         scheduler = CyclicCosineScheduler(
             optimizer,
-            warmup_epochs=5,
+            warmup_epochs=10,  # Longer warmup for better stability
             cycle_epochs=15,
             min_lr=1e-6,
-            max_lr=2e-4,
+            max_lr=1e-4,  # Lower max LR for better stability
             cycles=2
         )
         
@@ -746,31 +788,32 @@ def main():
     # Create full training loader (all train_val data)
     full_train_loader = PyGDataLoader(
         Subset(dataset, train_val_idx),
-        batch_size=16,
+        batch_size=32,  # Increased batch size for better stability
         shuffle=True,
         collate_fn=custom_collate_fn,
-        num_workers=4
+        num_workers=4,
+        drop_last=True  # Drop the last batch if it's smaller than batch_size
     )
     
     # Create model
     full_model = ExtremeBoostClassifier().to(device)
     
-    # Optimizer
+    # Optimizer with improved settings
     optimizer = AdamW(
         full_model.parameters(),
-        lr=1e-4,
-        weight_decay=1e-4,
+        lr=5e-5,  # Lower initial LR for better stability
+        weight_decay=2e-4,  # Slightly higher weight decay to prevent overfitting
         betas=(0.9, 0.999),
         eps=1e-8
     )
     
-    # Scheduler
+    # Scheduler with improved settings
     scheduler = CyclicCosineScheduler(
         optimizer,
-        warmup_epochs=5,
+        warmup_epochs=10,  # Longer warmup for better stability
         cycle_epochs=20,
         min_lr=1e-6,
-        max_lr=2e-4,
+        max_lr=1e-4,  # Lower max LR for better stability
         cycles=3
     )
     
